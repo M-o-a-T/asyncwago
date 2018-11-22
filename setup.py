@@ -29,6 +29,5 @@ setup(
         "Programming Language :: Python :: Implementation :: CPython",
         "Programming Language :: Python :: Implementation :: PyPy",
         "Framework :: Trio",
-        "Framework :: Asyncio",
     ],
 )
