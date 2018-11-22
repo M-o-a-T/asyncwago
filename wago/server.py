@@ -30,6 +30,7 @@ class WagoUnknown(WagoException):
 ### replies
 
 class BaseReply:
+    line = None
     def __init__(self, line):
         self.line = line
     def __repr__(self):
@@ -42,7 +43,7 @@ class SimpleRejectReply(BaseReply): # '?'
     pass
 class SimpleInfo(BaseReply): # '*'
     pass
-class MultilineReply(SimpleAckReply): # '='
+class MultilineInfo(SimpleAckReply): # '='
     def __init__(self, line):
         super().__init__(line)
         self.lines = []
@@ -51,10 +52,13 @@ class MultilineReply(SimpleAckReply): # '='
                 (self.__class__.__name__, repr(self.line), len(self.lines))
 
 class MonitorReply(BaseReply): # '!+'
+    mon = None
     def __init__(self, line):
         mon, line = line.lstrip().split(b' ',1)
         self.mon = int(mon)
         super().__init__(line)
+    def __repr__(self):
+        return "<%s:%s %s>" % (self.__class__.__name__, self.mon, repr(self.line))
 
 class MonitorCreated(MonitorReply): # '!+'
     pass
@@ -81,7 +85,8 @@ def decode_reply(line):
     return MonitorSignal(line[1:])
 
 class BaseChat:
-    reply = None
+    result = None
+    server = None
 
     def __init__(self):
         self.event = anyio.create_event()
@@ -95,14 +100,14 @@ class BaseChat:
         * `True` if the result finishes the request
         * `False` if the result is accepted but doesn't finish the request
         """
-        self.reply = reply
+        self.result = reply
         await self.event.set()
         return True
 
     def __repr__(self):
-        if self.reply is None:
+        if self.result is None:
             return "<%s>" % (self.__class__.__name__,)
-        return "<%s =%s>" % (self.__class__.__name__,self.reply)
+        return "<%s =%s>" % (self.__class__.__name__,self.result)
 
     async def repeat(self, server):
         """Re-enqueue to this server"""
@@ -116,17 +121,18 @@ class BaseChat:
         self.server = server
         await server._interact(self)
 
-    def close(self):
-        """Only close when the connection to this server goes away."""
+    async def aclose(self):
+        """Call this when the server goes away"""
         self.event.set()
         self.server = None
 
 
 class HelloChat(BaseChat):
+    """Read the initial message from the server"""
     async def set(self, reply):
         if not isinstance(reply, SimpleInfo):
             return None
-        self.reply = reply
+        self.result = reply
         await self.event.set()
         return True
 
@@ -134,45 +140,114 @@ class HelloChat(BaseChat):
         pass
 
 class SimpleChat(BaseChat):
-    reply = None
+    """Send a command that expects a single reply"""
+
     def __init__(self, cmd):
         super().__init__()
         self.cmd = cmd
 
     def __repr__(self):
-        if self.reply is None:
+        if self.result is None:
             return "<%s:%s>" % (self.__class__.__name__,self.cmd)
-        return "<%s:%s =%s>" % (self.__class__.__name__,self.cmd,self.reply)
+        return "<%s:%s =%s>" % (self.__class__.__name__,self.cmd,self.result)
 
     async def _send(self, server):
         await server._send(self.cmd)
 
     async def set(self, reply):
-        if not isinstance(reply, (SimpleAckReply, SimpleRejectReply)):
+        if not isinstance(reply, (SimpleAckReply, SimpleRejectReply, MultilineInfo)):
             return None
-        self.reply = reply
+        self.result = reply
         await self.event.set()
         return True
 
     async def wait(self):
         await self.event.wait()
-        if isinstance(self.reply, SimpleRejectReply):
-            raise WagoRejected(self.reply.line)
-        return self.reply
+        if isinstance(self.result, SimpleRejectReply):
+            raise WagoRejected(self.result.line)
+        return self.result
 
-    def close(self):
+    async def aclose(self):
         if not self.event.is_set():
-            self.reply = SimpleRejectReply("server closed")
-        super().close()
+            self.result = SimpleRejectReply("server closed")
+        else:
+            assert self.result is not None
+        await super().aclose()
 
 class MonitorChat(SimpleChat):
-    """Open a monitor, iterate the replies."""
+    """Open a monitor"""
 
     # None: not yet set, False: already closed
     mon = None
+
+    def __init__(self, *args):
+        self._did_setup = anyio.create_event()
+        super().__init__(*args)
+
+    async def interact(self, server):
+        await super().interact(server)
+        await self._did_setup.wait()
+        if isinstance(self.result, SimpleRejectReply):
+            raise WagoRejected(self.result.line)
+
+    def decode_signal(self, line):
+        """Override this to convert the text to something appropriate"""
+        return line
+
+    async def set(self, reply):
+        if not self.mon and isinstance(reply, SimpleRejectReply):
+            self.result = reply
+            await self.event.set()
+            await self._did_setup.set()
+            return True
+        if not isinstance(reply, MonitorReply):
+            return None
+        if isinstance(reply, MonitorCreated):
+            if self.mon is False:
+                # already cancelled.
+                self.mon = reply.mon
+                await self.server.tg.spawn(self.aclose)
+                return False
+            if self.mon is not None:
+                return None
+            self.mon = reply.mon
+            await self._did_setup.set()
+            return False
+        if self.mon is None or reply.mon != self.mon:
+            return None
+        if isinstance(reply, MonitorCleared):
+            await self.event.set()
+            await self._did_setup.set()  # just for safety
+            return True
+        assert isinstance(reply, MonitorSignal)
+        await self.process_signal(reply)
+        return False
+
+    async def process_signal(self, reply):
+        pass
+
+    async def aclose(self):
+        """Closes the iteration, i.e. shuts down the monitor."""
+        server = self.server
+        await super().aclose()
+        if self.mon is None:
+            self.mon = False
+        elif server is not None:
+            await server.simple_cmd("m-"+str(self.mon))
+        await self._did_setup.set()
+
+class TimedOutputChat(MonitorChat):
+    """A monitor that expects a single trigger message.
+    `wait` will return True if the message has been seen.
+    """
+    result = False
+    async def process_signal(self, reply):
+        self.result = True
+
+class InputMonitorChat(MonitorChat):
+    """Watch an input, iterate the replies."""
     q = None
     _qlen = 10
-    server = None
 
     def __aiter__(self):
         if self.q is None:
@@ -188,30 +263,11 @@ class MonitorChat(SimpleChat):
             raise StopAsyncIteration
         return res
 
-    def decode_signal(self, line):
-        """Override this to convert the text to something appropriate"""
-        return line
-
     async def set(self, reply):
-        if not isinstance(reply, MonitorReply):
-            return None
-        if isinstance(reply, MonitorCreated):
-            if self.mon is False:
-                # already cancelled.
-                self.mon = reply.mon
-                await self.server.tg.spawn(self.aclose)
-                return False
-            if self.mon is not None:
-                return None
-            self.mon = reply.mon
-            return False
-        if self.mon is None or reply.mon != self.mon:
-            return None
-        if isinstance(reply, MonitorCleared):
-            self.event.set()
-            return True
+        if self.mon in (None,False) or not isinstance(reply, MonitorSignal) \
+                or reply.mon != self.mon:
+            return await super().set(reply)
 
-        assert isinstance(reply, MonitorSignal)
         if self.q is not None:
             sz = self.q.qsize()
             if sz < self._qlen:
@@ -220,21 +276,41 @@ class MonitorChat(SimpleChat):
                 await self.q.put(QueueBlocked)
         return False
 
-    async def aclose(self):
-        """Closes the iteration, i.e. shuts down the monitor."""
-        await super().aclose()
-        if self.mon is None:
-            self.mon = False
-        else:
-            await self.server.simple_cmd("m-"+str(self.mon))
+    def decode_signal(self, line):
+        """Override this to convert the text to something appropriate"""
+        if line in (b'H', b'1'):
+            return True
+        if line in (b'L', b'0'):
+            return False
+        return ValueError(line)
+
+    async def set(self, reply):
+        if not self.mon or not isinstance(reply, MonitorReply) \
+                or reply.mon != self.mon:
+            return await super().set(reply)
+        if isinstance(reply, MonitorCleared):
+            if self.q is not None:
+                await self.q.put(None)
+                self.q = None
+            return super().set(reply)
+        if isinstance(reply, MonitorSignal):
+            if self.q is not None:
+                sz = self.q.qsize()
+                if sz <= self._qlen:
+                    await self.q.put(self.decode_signal(reply.line))
+                elif sz == self._qlen+1:
+                    await self.q.put(QueueBlocked)
+        return False
+
+class InputCounterChat(InputMonitorChat):
+    """Watch an input, count the changes."""
+    def decode_signal(self, line):
+        return int(line)
+
 
 class PingChat(MonitorChat):
     def __init__(self, freq=1):
         super().__init__("Da "+str(freq))
-
-    async def interact(self, server):
-        await super().interact(server)
-
 
     def decode_signal(self, line):
         return int(line[line.rindex(' '):])
@@ -245,7 +321,7 @@ class Server:
     """
     freq = 5 # how often to poll input lines. Min 0.01
 
-    def __init__(self, taskgroup, host, port=5995, freq=None):
+    def __init__(self, taskgroup, host, port=59995, freq=None):
         self.task_group = taskgroup
         self.host = host
         self.port = port
@@ -285,14 +361,15 @@ class Server:
 
     async def _reader(self):
         while True:
-            async with anyio.fail_after(5):
+            async with anyio.fail_after(self.freq + 2):
                 line = await self.chan.receive_until(delimiter=b'\n', max_size=512)
                 line = decode_reply(line)
                 logger.debug("IN: %s",line)
 
-                if isinstance(line, MultilineReply):
+                if isinstance(line, MultilineInfo):
                     while True:
-                        li = self.chan.receive_until(delimiter=b'\n', max_size=512)
+                        li = await self.chan.receive_until(delimiter=b'\n', max_size=512)
+                        logger.debug("IN:: %s",li)
                         if li == b'.':
                             break
                         line.lines.append(li)
@@ -314,10 +391,69 @@ class Server:
             res = await r.set(reply)
             if res is None:
                 continue
+            logger.debug("Did %s %s %s",r,reply, res)
             if res:
                 del self._cmds[i]
             return
         raise WagoUnknown(reply)
+    
+    # Actual accessors follow
+
+    async def read_input(self, card, port):
+        res = await self.simple_cmd("i",card,port)
+        return bool(int(res.line))
+
+    async def read_output(self, card, port):
+        res = await self.simple_cmd("I",card,port)
+        return bool(int(res.line))
+
+    async def write_output(self, card, port, value):
+        res = await self.simple_cmd("s" if value else "c", card, port)
+        return bool(int(res.line))
+
+    async def describe(self):
+        res = {}
+        info = await self.simple_cmd("Dp")
+        for l in info.lines:
+            # 2: digital output:750-5xx 16 => 00010 00000 00000 0
+            # 1: digital input:750-4xx 8 <= 00000 000
+
+            i,dig,io,n,_ = l.split(b" ",4)
+            if dig != b'digital':
+                continue
+            io = io[:io.index(b':')]
+            if i[-1] == b':'[0]:
+                i = i[:-1]
+            res.setdefault(io.decode('ascii'),{})[int(i)] = int(n)
+        return res
+
+    async def monitor_input(self, card, port, direction=None):
+        """
+        Monitor this input line.
+        """
+        mon = InputMonitorChat("m+ %d %d %c" % \
+                (card, port, "*" if direction is None
+                                 else '+' if direction else '-'))
+        await mon.interact(self)
+        return mon
+
+    async def count_input(self, card, port, direction=None, interval=None):
+        """
+        Monitor this input line.
+        """
+        if interval is None:
+            interval = max(10, self.freq)
+        mon = InputCounterChat("m# %d %d %c %f" % \
+                (card, port, "*" if direction is None
+                                 else '+' if direction else '-', interval))
+        await mon.interact(self)
+        return mon
+
+    async def write_timed_output(self, card, port, value, duration):
+        timed = TimedOutputChat("%s %s %s %s" % ("s" if value else "c", card, port, duration))
+        await timed.interact(self)
+        return timed
+
 
 @asynccontextmanager
 async def open_server(*args, ServerClass=Server, **kwargs):

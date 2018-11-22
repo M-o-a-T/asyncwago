@@ -133,11 +133,36 @@ class MockServer(Server):
 @pytest.mark.anyio
 async def test_wago_mock():
     async with open_server(ServerClass=MockServer) as s:
-        m = MonitorChat("m+ 1 1 *")
-        await m.interact(s)
+        await s.simple_cmd("Dc")
+        assert await s.read_input(1,2) is False
+        await s.simple_cmd("Ds")
+        assert await s.read_input(1,2) is True
+        await s.simple_cmd("Dp")
+        info = await s.describe()
+        assert info == {'input':{1:8},'output':{2:16,3:16}}
+
+        # Yes I know that this is unlikely
+        for i in range(10):
+            m = await s.write_timed_output(2,4,True,2)
+            if await m.wait():
+                break
+        else:
+            assert False("We didn't get a sane output.")
+        m = await s.write_timed_output(2,4,True,10)
+        assert not await m.wait()
+
+        m = await s.count_input(1,3,interval=2)
+        async for msg in m:
+            print(msg)
+            if msg > 20:
+                break
+        await m.aclose()
+
+        m = await s.monitor_input(1,3)
         x = 0
         async for msg in m:
             print(msg)
             x += 1
             if x >= 10:
                 break
+
