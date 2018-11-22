@@ -456,12 +456,13 @@ class Server:
 
 
 @asynccontextmanager
+@async_generator
 async def open_server(*args, ServerClass=Server, **kwargs):
     async with anyio.create_task_group() as tg:
         s = ServerClass(*args, taskgroup=tg, **kwargs)
         try:
             await s.start()
-            yield s
+            await yield_(s)
         finally:
             await tg.cancel_scope.cancel()
             await s.aclose()
