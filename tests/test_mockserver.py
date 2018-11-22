@@ -1,0 +1,143 @@
+import sys
+import time
+import anyio
+import anyio.abc
+from anyio.exceptions import IncompleteRead, DelimiterNotFound
+import asyncio
+import pytest
+from wago.server import Server,open_server, MonitorChat
+from functools import partial
+from inspect import iscoroutine
+
+from typing import Callable, TypeVar, Optional, Tuple, Union, AsyncIterable, Dict, List, Coroutine
+
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+# We can just use 'async def test_*' to define async tests.
+# This also uses a virtual clock fixture, so time passes quickly and
+# predictably.
+
+from wago.server import Server
+
+class MockServerProtocol(asyncio.SubprocessProtocol, anyio.abc.Stream):
+    def __init__(self, server):
+        self.server = server
+        self._recv_q = asyncio.Queue()
+        self._buffer = b''
+    def pipe_data_received(self, fd, data):
+        self._recv_q.put_nowait(data)
+    def pipe_connection_lost(self, fd, exc):
+        self._recv_q.put_nowait(None)
+    async def _recv(self):
+        if self._recv_q is None:
+            return ""
+        res = await self._recv_q.get()
+        if res is None:
+            self._recv_q = None
+            return ""
+        return res
+    async def close(self):
+        self._sub_trans.close()
+    async def send_all(self, data):
+        self.server._sub_trans.get_pipe_transport(0).write(data)
+
+    @property
+    def buffered_data(self):
+        return self._buffer
+
+    async def receive_some(self, max_bytes: int) -> bytes:
+        if not self._buffer:
+            self._buffer = await self._recv(max_bytes)
+            if not self._buffer:
+                return None
+        data, self._buffer = self._buffer[:max_bytes], self._buffer[max_bytes:]
+        return data
+    recv = receive_some
+
+    async def receive_exactly(self, nbytes: int) -> bytes:
+        bytes_left = nbytes - len(self._buffer)
+        while bytes_left > 0:
+            chunk = await self._recv()
+            if not chunk:
+                raise IncompleteRead
+
+            self._buffer += chunk
+            bytes_left -= len(chunk)
+
+        result = self._buffer[:nbytes]
+        self._buffer = self._buffer[nbytes:]
+        return result
+
+    async def receive_until(self, delimiter: bytes, max_size: int) -> bytes:
+        delimiter_size = len(delimiter)
+        offset = 0
+        while True:
+            # Check if the delimiter can be found in the current buffer
+            index = self._buffer.find(delimiter, offset)
+            if index >= 0:
+                found = self._buffer[:index]
+                self._buffer = self._buffer[index + len(delimiter):]
+                return found
+
+            # Check if the buffer is already at or over the limit
+            if len(self._buffer) >= max_size:
+                raise DelimiterNotFound(max_size)
+
+            # Read more data into the buffer from the socket
+            read_size = max_size - len(self._buffer)
+            data = await self._recv()
+            if not data:
+                raise IncompleteRead
+
+            # Move the offset forward and add the new data to the buffer
+            offset = max(len(self._buffer) - delimiter_size + 1, 0)
+            self._buffer += data
+
+    def receive_chunks(self, max_size: int) -> AsyncIterable[bytes]:
+        raise NotImplementedError
+    def receive_delimited_chunks(self, delimiter: bytes,
+                                 max_chunk_size: int) -> AsyncIterable[bytes]:
+        raise NotImplementedError
+
+    async def close(self):
+        """This may or may not work."""
+        res = super().close()
+        if iscoroutine(res):
+            await res
+
+class MockServer(Server):
+    freq = 0.1
+    def __init__(self, taskgroup):
+        super().__init__(taskgroup, 'nope.invalid')
+
+    async def _connect(self):
+        assert anyio._detect_running_asynclib() == 'asyncio'
+        loop = asyncio.get_event_loop()
+        self._sub_trans, self._sub_prot, = await loop.subprocess_exec(
+                partial(MockServerProtocol, server=self),
+                "../wago-firmware/wago","-d","-D","-p0",
+                "-c","../wago-firmware/wago.sample.csv",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=sys.stderr,
+            )
+        return self._sub_prot
+
+    async def run(self):
+        try:
+            super().run()
+        finally:
+            self._sub_prot.close()
+
+@pytest.mark.anyio
+async def test_wago_mock():
+    async with open_server(ServerClass=MockServer) as s:
+        m = MonitorChat("m+ 1 1 *")
+        await m.interact(s)
+        x = 0
+        async for msg in m:
+            print(msg)
+            x += 1
+            if x >= 10:
+                break
