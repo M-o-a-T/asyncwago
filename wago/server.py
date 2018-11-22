@@ -123,7 +123,7 @@ class BaseChat:
 
     async def aclose(self):
         """Call this when the server goes away"""
-        self.event.set()
+        await self.event.set()
         self.server = None
 
 
@@ -292,7 +292,7 @@ class InputMonitorChat(MonitorChat):
             if self.q is not None:
                 await self.q.put(None)
                 self.q = None
-            return super().set(reply)
+            return await super().set(reply)
         if isinstance(reply, MonitorSignal):
             if self.q is not None:
                 sz = self.q.qsize()
