@@ -521,7 +521,18 @@ class Server:
         return mon
 
     async def write_timed_output(self, card, port, value, duration):
+        """
+        Set (or clear) an output for N seconds.
+        """
         timed = TimedOutputChat("%s %s %s %s" % ("s" if value else "c", card, port, duration))
+        await timed.interact(self)
+        return timed
+
+    async def write_pulsed_output(self, card, port, value, duration1, duration2):
+        """
+        Set (or clear) an output for N1 seconds, then clear(or set) for N2 seconds, repeat.
+        """
+        timed = TimedOutputChat("%s %s %s %s %s" % ("s" if value else "c", card, port, duration1, duration2))
         await timed.interact(self)
         return timed
 

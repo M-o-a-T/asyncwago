@@ -1,4 +1,10 @@
-wago (0.11.0-1) smurf; urgency=low
+wago (0.12.0-1) unstable; urgency=medium
+
+  * Update
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Thu, 29 Aug 2019 15:12:45 +0200
+
+wago (0.11.0-1) unstable; urgency=low
 
   * source package automatically created by stdeb 0.8.5
 
