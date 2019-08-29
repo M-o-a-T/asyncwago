@@ -15,17 +15,19 @@ setup(
     license="GPLv3 or later",
     packages=find_packages(),
     install_requires=[
-        "anyio",
+        "anyio >= 1.0",
     ],
     keywords=[
         # COOKIECUTTER-TRIO-TODO: add some keywords
         # "async", "io", "networking", ...
     ],
-    python_requires=">=3.5",
+    python_requires=">=3.6",
     classifiers=[
         "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
         "Operating System :: POSIX :: Linux",
         "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: Implementation :: CPython",
         "Programming Language :: Python :: Implementation :: PyPy",
         "Framework :: Trio",

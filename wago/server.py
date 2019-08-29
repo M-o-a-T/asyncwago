@@ -3,8 +3,10 @@ Basic Wago access
 """
 
 import anyio
-from async_generator import asynccontextmanager
-from async_generator import async_generator, yield_
+try:
+    from contextlib import asynccontextmanager
+except ImportError:
+    from async_generator import asynccontextmanager
 
 import logging
 logger = logging.getLogger(__name__)
@@ -321,6 +323,8 @@ class Server:
     """
     freq = 5 # how often to poll input lines. Min 0.01
 
+    chan = None
+
     def __init__(self, taskgroup, host, port=59995, freq=None):
         self.task_group = taskgroup
         self.host = host
@@ -339,15 +343,20 @@ class Server:
         """This task holds the communication with a controller."""
         self.chan = await self._connect()
         tg = self.task_group
-        await tg.spawn(self._init_chan)
+        evt = anyio.create_event()
+        await tg.spawn(self._init_chan, evt)
+        await evt.wait()
         await tg.spawn(self._reader)
 
     async def aclose(self):
-        await self.chan.close()
+        if self.chan is not None:
+            await self.chan.close()
+            self.chan = None
 
-    async def _init_chan(self):
+    async def _init_chan(self, evt):
         """Set up the device's state."""
         await HelloChat().interact(self)
+        await evt.set()
 
         await self.simple_cmd("d",self.freq)
         ping = PingChat()
@@ -362,6 +371,8 @@ class Server:
     async def _reader(self):
         while True:
             async with anyio.fail_after(self.freq + 2):
+                if self.chan is None:
+                    return
                 line = await self.chan.receive_until(delimiter=b'\n', max_size=512)
                 line = decode_reply(line)
                 logger.debug("IN: %s",line)
@@ -456,13 +467,12 @@ class Server:
 
 
 @asynccontextmanager
-@async_generator
 async def open_server(*args, ServerClass=Server, **kwargs):
     async with anyio.create_task_group() as tg:
         s = ServerClass(*args, taskgroup=tg, **kwargs)
         try:
             await s.start()
-            await yield_(s)
+            yield s
         finally:
             await tg.cancel_scope.cancel()
             await s.aclose()
