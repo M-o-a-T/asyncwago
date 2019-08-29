@@ -2,6 +2,7 @@ import sys
 import time
 import anyio
 import anyio.abc
+import sniffio
 from anyio.exceptions import IncompleteRead, DelimiterNotFound
 import asyncio
 import pytest
@@ -20,15 +21,12 @@ logging.basicConfig(level=logging.DEBUG)
 
 from wago.server import Server
 
-class MockServerProtocol(asyncio.SubprocessProtocol, anyio.abc.Stream):
+class _MockServerProtocol(anyio.abc.Stream):
     def __init__(self, server):
         self.server = server
-        self._recv_q = asyncio.Queue()
+        self._recv_q = anyio.create_queue(1)
         self._buffer = b''
-    def pipe_data_received(self, fd, data):
-        self._recv_q.put_nowait(data)
-    def pipe_connection_lost(self, fd, exc):
-        self._recv_q.put_nowait(None)
+
     async def _recv(self):
         if self._recv_q is None:
             return ""
@@ -37,10 +35,6 @@ class MockServerProtocol(asyncio.SubprocessProtocol, anyio.abc.Stream):
             self._recv_q = None
             return ""
         return res
-    async def close(self):
-        self._sub_trans.close()
-    async def send_all(self, data):
-        self.server._sub_trans.get_pipe_transport(0).write(data)
 
     @property
     def buffered_data(self):
@@ -106,29 +100,86 @@ class MockServerProtocol(asyncio.SubprocessProtocol, anyio.abc.Stream):
         if iscoroutine(res):
             await res
 
+class AsyncioMockServerProtocol(asyncio.SubprocessProtocol, _MockServerProtocol):
+    def pipe_data_received(self, fd, data):
+        self._recv_q.put_nowait(data)
+    def pipe_connection_lost(self, fd, exc):
+        self._recv_q.put_nowait(None)
+
+    async def close(self):
+        if self.server._sub_trans is not None:
+            self.server._sub_trans.close()
+            self.server._sub_trans = None
+
+    async def send_all(self, data):
+        self.server._sub_trans.get_pipe_transport(0).write(data)
+
+    async def _recv(self):
+        if self._recv_q is None:
+            return ""
+        res = await self._recv_q.get()
+        if res is None:
+            self._recv_q = None
+            return ""
+        return res
+
+class TrioMockServerProtocol(_MockServerProtocol):
+    async def _recv_loop(self):
+        """Receive loop"""
+        while True:
+            b = await self.server._sub_prot.stdout.receive_some(1024)
+            if not b:
+                await self._recv_q.put(None)
+                break
+            await self._recv_q.put(b)
+
+    async def close(self):
+        if self.server._sub_prot is not None:
+            self.server._sub_prot.kill()
+
+    async def send_all(self, data):
+        await self.server._sub_prot.stdin.send_all(data)
+
+
+
 class MockServer(Server):
     freq = 0.1
     def __init__(self, taskgroup):
         super().__init__(taskgroup, 'nope.invalid')
 
     async def _connect(self):
-        assert anyio._detect_running_asynclib() == 'asyncio'
-        loop = asyncio.get_event_loop()
-        self._sub_trans, self._sub_prot, = await loop.subprocess_exec(
-                partial(MockServerProtocol, server=self),
-                "../wago-firmware/wago","-d","-D","-p0",
-                "-c","../wago-firmware/wago.sample.csv",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=sys.stderr,
-            )
-        return self._sub_prot
+        if sniffio.current_async_library() == 'asyncio':
+            loop = asyncio.get_event_loop()
+            self._sub_trans, self._sub_prot, = await loop.subprocess_exec(
+                    partial(AsyncioMockServerProtocol, server=self),
+                    "../wago-firmware/wago","-d","-D","-p0",
+                    "-c","../wago-firmware/wago.sample.csv",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=sys.stderr,
+                )
+            return self._sub_prot
+        elif sniffio.current_async_library() == 'trio':
+            import trio
+            import subprocess
+            self._sub_prot = await trio.open_process(
+                    ["../wago-firmware/wago","-d","-D","-p0",
+                    "-c","../wago-firmware/wago.sample.csv"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=sys.stderr,
+                    )
+            p = TrioMockServerProtocol(server=self)
+            await self.task_group.spawn(p._recv_loop)
+            return p
+        else:
+            assert False,"Not supported"
 
     async def run(self):
         try:
             super().run()
         finally:
-            self._sub_prot.close()
+            self._sub_prot.kill()
 
 @pytest.mark.anyio
 async def test_wago_mock():
