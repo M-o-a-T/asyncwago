@@ -312,11 +312,26 @@ class InputCounterChat(InputMonitorChat):
 
 class PingChat(MonitorChat):
     def __init__(self, freq=1):
+        self._freq = freq
+        self._wait = anyio.create_event()
         super().__init__("Da "+str(freq))
 
     def decode_signal(self, line):
         return int(line[line.rindex(' '):])
 
+    async def process_signal(self, reply):
+        await self._wait.set()
+
+    async def ping_wait(self):
+        while True:
+            async with anyio.fail_after(self._freq * 1.1):
+                await self._wait.wait()
+            self._wait = anyio.create_event()
+
+    async def interact(self, server):
+        await server.task_group.spawn(self.ping_wait)
+        return await super().interact(server)
+    
 class Server:
     """This class collects all data required to talk to a single Wago
     controller.
