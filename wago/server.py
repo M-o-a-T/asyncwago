@@ -15,15 +15,18 @@ class QueueBlocked:
     """Sentinel to show that the reader doesn't keep up"""
 
 class WagoException(RuntimeError):
+    """Base class for our exceptions"""
     pass
 
 class WagoRejected(WagoException):
+    """The controller rejected a command"""
     def __init__(self, line):
         self.line = line
     def __repr__(self):
         return "REJ:"+repr(self.line)
 
 class WagoUnknown(WagoException):
+    """The controller sent an unknoan command"""
     def __init__(self, line):
         self.line = line
     def __repr__(self):
@@ -32,20 +35,26 @@ class WagoUnknown(WagoException):
 ### replies
 
 class BaseReply:
+    """Base class for replies from the controller"""
     line = None
     def __init__(self, line):
         self.line = line
     def __repr__(self):
         return "<%s:%s>" % (self.__class__.__name__, repr(self.line))
-class UnknownReply(BaseReply): # ???
+class UnknownReply(BaseReply):
+    """Anything without a recognized prefix"""
     pass
-class SimpleAckReply(BaseReply): # '+'
+class SimpleAckReply(BaseReply):
+    """Reply starts with ``+``: Ack."""
     pass
-class SimpleRejectReply(BaseReply): # '?'
+class SimpleRejectReply(BaseReply):
+    """Reply starts with ``-``: Reject."""
     pass
-class SimpleInfo(BaseReply): # '*'
+class SimpleInfo(BaseReply):
+    """Reply starts with ``*``: Info."""
     pass
 class MultilineInfo(SimpleAckReply): # '='
+    """Reply starts with ``=``: Multi-line."""
     def __init__(self, line):
         super().__init__(line)
         self.lines = []
@@ -53,7 +62,8 @@ class MultilineInfo(SimpleAckReply): # '='
         return "<%s:%s (+%d)>" % \
                 (self.__class__.__name__, repr(self.line), len(self.lines))
 
-class MonitorReply(BaseReply): # '!+'
+class MonitorReply(BaseReply):
+    """Monitor reply base class."""
     mon = None
     def __init__(self, line):
         mon, line = line.lstrip().split(b' ',1)
@@ -63,13 +73,17 @@ class MonitorReply(BaseReply): # '!+'
         return "<%s:%s %s>" % (self.__class__.__name__, self.mon, repr(self.line))
 
 class MonitorCreated(MonitorReply): # '!+'
+    """Reply starts with ``!+``: monitor created."""
     pass
 class MonitorCleared(MonitorReply): # '!-'
+    """Reply starts with ``!-``: monitor cleared."""
     pass
 class MonitorSignal(MonitorReply): # '!' without trailing + or -
+    """Reply starts with ``!``: monitor signal."""
     pass
 
 def decode_reply(line):
+    """Decode a reply line."""
     if line[0] == b'+'[0]:
         return SimpleAckReply(line[1:])
     if line[0] == b'-'[0]:
@@ -87,6 +101,7 @@ def decode_reply(line):
     return MonitorSignal(line[1:])
 
 class BaseChat:
+    """Base class for sending a command to the server."""
     result = None
     server = None
 
@@ -101,6 +116,8 @@ class BaseChat:
         * `None` if the result doesn't match
         * `True` if the result finishes the request
         * `False` if the result is accepted but doesn't finish the request
+
+        Override this, and return ``__super__`` if you want to return `True`.
         """
         self.result = reply
         await self.event.set()
@@ -111,15 +128,11 @@ class BaseChat:
             return "<%s>" % (self.__class__.__name__,)
         return "<%s =%s>" % (self.__class__.__name__,self.result)
 
-    async def repeat(self, server):
-        """Re-enqueue to this server"""
-        return
-
     async def _send(self, server):
         raise NotImplementedError("send")
 
     async def interact(self, server):
-        """Start an interaction on this server"""
+        """Run the command on this server"""
         self.server = server
         await server._interact(self)
 
@@ -134,9 +147,7 @@ class HelloChat(BaseChat):
     async def set(self, reply):
         if not isinstance(reply, SimpleInfo):
             return None
-        self.result = reply
-        await self.event.set()
-        return True
+        return await super().set(reply)
 
     async def _send(self, server):
         pass
@@ -159,9 +170,7 @@ class SimpleChat(BaseChat):
     async def set(self, reply):
         if not isinstance(reply, (SimpleAckReply, SimpleRejectReply, MultilineInfo)):
             return None
-        self.result = reply
-        await self.event.set()
-        return True
+        return await super().set(reply)
 
     async def wait(self):
         await self.event.wait()
@@ -177,7 +186,13 @@ class SimpleChat(BaseChat):
         await super().aclose()
 
 class MonitorChat(SimpleChat):
-    """Open a monitor"""
+    """Open a monitor.
+    
+    Override `decode_signal` to check and convert the value.
+
+    Override `process_signal` to do something with the resulting
+    `MonitorSignal` event.
+    """
 
     # None: not yet set, False: already closed
     mon = None
@@ -193,15 +208,14 @@ class MonitorChat(SimpleChat):
             raise WagoRejected(self.result.line)
 
     def decode_signal(self, line):
-        """Override this to convert the text to something appropriate"""
+        """Override this to convert the input to something appropriate"""
         return line
 
     async def set(self, reply):
+        """Process replies"""
         if not self.mon and isinstance(reply, SimpleRejectReply):
-            self.result = reply
-            await self.event.set()
             await self._did_setup.set()
-            return True
+            return await super().set(reply)
         if not isinstance(reply, MonitorReply):
             return None
         if isinstance(reply, MonitorCreated):
@@ -220,12 +234,17 @@ class MonitorChat(SimpleChat):
         if isinstance(reply, MonitorCleared):
             await self.event.set()
             await self._did_setup.set()  # just for safety
+            # does not call super() because we want to keep the last reply
             return True
         assert isinstance(reply, MonitorSignal)
         await self.process_signal(reply)
         return False
 
     async def process_signal(self, reply):
+        """Process `MonitorSignal` events.
+        
+        Override this; the default does nothing.
+        """
         pass
 
     async def aclose(self):
@@ -240,6 +259,8 @@ class MonitorChat(SimpleChat):
 
 class TimedOutputChat(MonitorChat):
     """A monitor that expects a single trigger message.
+    This is used for outputs that are auto-cleared after some time.
+
     `wait` will return True if the message has been seen.
     """
     result = False
@@ -279,7 +300,6 @@ class InputMonitorChat(MonitorChat):
         return False
 
     def decode_signal(self, line):
-        """Override this to convert the text to something appropriate"""
         if line in (b'H', b'1'):
             return True
         if line in (b'L', b'0'):
@@ -402,6 +422,11 @@ class Server:
                 await self._process_reply(line)
 
     async def simple_cmd(self, *args):
+        """Send a simple command to this server.
+
+        A simple command results in exactly one reply message.
+        If the reply is negative, this call raises 'WagoRejected`.
+        """
         s = " ".join(str(arg) for arg in args)
         res = SimpleChat(s)
         await res.interact(self)
@@ -426,18 +451,34 @@ class Server:
     # Actual accessors follow
 
     async def read_input(self, card, port):
+        """Read the state of a bool input."""
         res = await self.simple_cmd("i",card,port)
         return bool(int(res.line))
 
     async def read_output(self, card, port):
+        """Read the current state of a bool output."""
         res = await self.simple_cmd("I",card,port)
         return bool(int(res.line))
 
     async def write_output(self, card, port, value):
+        """Change the state of a bool output."""
         res = await self.simple_cmd("s" if value else "c", card, port)
         return bool(int(res.line))
 
     async def describe(self):
+        """Retrieve the interfaces attached to this server.
+
+        Result::
+            input:
+                1: 8
+            output:
+                2: 16
+
+        describes a device with one 8-wire input card 1, and one 16-wire
+        output card 2.
+
+        Ports are numbered ``1…n``, not ``0…n-1``!
+        """
         res = {}
         info = await self.simple_cmd("Dp")
         for l in info.lines:
@@ -456,6 +497,8 @@ class Server:
     async def monitor_input(self, card, port, direction=None):
         """
         Monitor this input line.
+
+        Direction is True/False/None for up/down/both.
         """
         mon = InputMonitorChat("m+ %d %d %c" % \
                 (card, port, "*" if direction is None
@@ -465,7 +508,9 @@ class Server:
 
     async def count_input(self, card, port, direction=None, interval=None):
         """
-        Monitor this input line.
+        Count pulses on this input line. Reports count per interval.
+
+        Direction is True/False/None for up/down/both.
         """
         if interval is None:
             interval = max(10, self.freq)
