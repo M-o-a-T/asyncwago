@@ -1,12 +1,11 @@
 from setuptools import setup, find_packages
 
-exec(open("wago/_version.py", encoding="utf-8").read())
-
 LONG_DESC = open("README.rst", encoding="utf-8").read()
 
 setup(
     name="wago",
-    version=__version__,
+    use_scm_version={"version_scheme": "guess-next-dev", "local_scheme": "dirty-tag"},
+    setup_requires=["setuptools_scm"],
     description="Access I/O on Wago controllers",
     url="http://github.com/M-o-a-T/wago",
     long_description=LONG_DESC,
