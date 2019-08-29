@@ -18,8 +18,7 @@ setup(
         "anyio >= 1.0",
     ],
     keywords=[
-        # COOKIECUTTER-TRIO-TODO: add some keywords
-        # "async", "io", "networking", ...
+        "iot",
     ],
     python_requires=">=3.6",
     classifiers=[
