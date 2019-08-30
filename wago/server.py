@@ -201,6 +201,11 @@ class MonitorChat(SimpleChat):
         self._did_setup = anyio.create_event()
         super().__init__(*args)
 
+    def __repr__(self):
+        res = super().__repr__()
+        res = res[:-1]+" mon="+repr(self.mon)+res[-1]
+        return res
+
     async def interact(self, server):
         await super().interact(server)
         await self._did_setup.wait()
