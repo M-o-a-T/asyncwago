@@ -454,21 +454,20 @@ class Server:
 
     async def _reader(self):
         while True:
-            async with anyio.fail_after(self.freq + 2):
-                if self.chan is None:
-                    return
-                line = await self.chan.receive_until(delimiter=b'\n', max_size=512)
-                line = decode_reply(line)
-                logger.debug("IN: %s",line)
+            if self.chan is None:
+                return
+            line = await self.chan.receive_until(delimiter=b'\n', max_size=512)
+            line = decode_reply(line)
+            logger.debug("IN: %s",line)
 
-                if isinstance(line, MultilineInfo):
-                    while True:
-                        li = await self.chan.receive_until(delimiter=b'\n', max_size=512)
-                        logger.debug("IN:: %s",li)
-                        if li == b'.':
-                            break
-                        line.lines.append(li)
-                await self._process_reply(line)
+            if isinstance(line, MultilineInfo):
+                while True:
+                    li = await self.chan.receive_until(delimiter=b'\n', max_size=512)
+                    logger.debug("IN:: %s",li)
+                    if li == b'.':
+                        break
+                    line.lines.append(li)
+            await self._process_reply(line)
 
     async def simple_cmd(self, *args):
         """Send a simple command to this server.
