@@ -330,6 +330,14 @@ class InputMonitorChat(MonitorChat):
                     await self.q.put(QueueBlocked)
         return False
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *tb):
+        async with anyio.open_cancel_scope(shield=True) :
+            await self.aclose()
+
+
 class InputCounterChat(InputMonitorChat):
     """Watch an input, count the changes."""
     def decode_signal(self, line):
