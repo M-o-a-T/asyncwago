@@ -494,7 +494,9 @@ class Server:
             if res:
                 del self._cmds[i]
             return
-        raise WagoUnknown(reply)
+        if not isinstance(reply, MonitorCleared):
+            # collision between settingup and tearing down a monitor.
+            raise WagoUnknown(reply)
     
     # Actual accessors follow
 
