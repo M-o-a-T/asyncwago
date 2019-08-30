@@ -201,6 +201,11 @@ class MonitorChat(SimpleChat):
         self._did_setup = anyio.create_event()
         super().__init__(*args)
 
+    def __repr__(self):
+        res = super().__repr__()
+        res = res[:-1]+" mon="+repr(self.mon)+res[-1]
+        return res
+
     async def interact(self, server):
         await super().interact(server)
         await self._did_setup.wait()
@@ -222,7 +227,7 @@ class MonitorChat(SimpleChat):
             if self.mon is False:
                 # already cancelled.
                 self.mon = reply.mon
-                await self.server.tg.spawn(self.aclose)
+                await self.server.task_group.spawn(self.aclose)
                 return False
             if self.mon is not None:
                 return None
@@ -250,11 +255,12 @@ class MonitorChat(SimpleChat):
     async def aclose(self):
         """Closes the iteration, i.e. shuts down the monitor."""
         server = self.server
-        await super().aclose()
         if self.mon is None:
             self.mon = False
-        elif server is not None:
-            await server.simple_cmd("m-"+str(self.mon))
+        elif self.mon:
+            m,self.mon = self.mon,0
+            await server.simple_cmd("m-"+str(m))
+        await self.event.set()
         await self._did_setup.set()
 
 class TimedOutputChat(MonitorChat):
@@ -331,6 +337,8 @@ class InputCounterChat(InputMonitorChat):
 
 
 class PingChat(MonitorChat):
+    _scope = None
+
     def __init__(self, freq=1):
         self._freq = freq
         self._wait = anyio.create_event()
@@ -342,34 +350,72 @@ class PingChat(MonitorChat):
     async def process_signal(self, reply):
         await self._wait.set()
 
-    async def ping_wait(self):
-        while True:
-            async with anyio.fail_after(self._freq * 1.1):
-                await self._wait.wait()
-            self._wait = anyio.create_event()
+    async def ping_wait(self, evt):
+        async with anyio.open_cancel_scope() as sc:
+            self._scope = sc
+            await evt.set()
+            while True:
+                try:
+                    async with anyio.fail_after(self._freq * 3):
+                        await self._wait.wait()
+                except TimeoutError:
+                    logger.error("PING missing %r", self)
+                    raise
+                self._wait = anyio.create_event()
 
     async def interact(self, server):
-        await server.task_group.spawn(self.ping_wait)
+        evt = anyio.create_event()
+        await server.task_group.spawn(self.ping_wait, evt)
+        await evt.wait()
         return await super().interact(server)
+
+    async def aclose(self):
+        await super().aclose()
+        if self._scope is not None:
+            await self._scope.cancel()
+        await super().aclose()
     
 class Server:
     """This class collects all data required to talk to a single Wago
     controller.
     """
-    freq = 5 # how often to poll input lines. Min 0.01
+    freq = 0.05  # how often to poll input lines. Min 0.01
+    ping_freq = 3  # how often to expect a Ping keepalive
+    _ping = None
 
     chan = None
 
-    def __init__(self, taskgroup, host, port=59995, freq=None):
+    def __init__(self, taskgroup, host, port=59995, freq=None, ping_freq=None):
         self.task_group = taskgroup
         self.host = host
         self.port = port
         if freq is not None:
             self.freq = freq
+        if ping_freq is not None:
+            self.ping_freq = freq
 
         self._ports = {}
         self._cmds = []
         self._send_lock = anyio.create_lock()
+
+    async def set_freq(self, freq: float = None):
+        """
+        Change the controller's time between main loop runs.
+        """
+        if freq is not None:
+            self.freq = freq
+        await self.simple_cmd("d",self.freq)
+
+    async def set_ping_freq(self, ping_freq: float = None):
+        """
+        Change the time between two "ping" messages from the controller.
+        """
+        if ping_freq is not None:
+            self.ping_freq = ping_freq
+        if self._ping is not None:
+            await self._ping.aclose()
+        self._ping = PingChat(self.ping_freq)
+        await self._ping.interact(self)
 
     async def _connect(self):
         return await anyio.connect_tcp(address=self.host, port=self.port)
@@ -392,12 +438,15 @@ class Server:
         """Set up the device's state."""
         await HelloChat().interact(self)
         await evt.set()
+        await self._set_state()
 
-        await self.simple_cmd("d",self.freq)
-        ping = PingChat()
-        await ping.interact(self)
+    async def _set_state(self):
+        await self.set_freq()
+        await self.set_ping_freq()
 
     async def _send(self, s):
+        if self.chan is None:
+            return
         logger.debug("OUT: %s",s)
         if isinstance(s, str):
             s = s.encode("utf-8")
@@ -405,21 +454,20 @@ class Server:
 
     async def _reader(self):
         while True:
-            async with anyio.fail_after(self.freq + 2):
-                if self.chan is None:
-                    return
-                line = await self.chan.receive_until(delimiter=b'\n', max_size=512)
-                line = decode_reply(line)
-                logger.debug("IN: %s",line)
+            if self.chan is None:
+                return
+            line = await self.chan.receive_until(delimiter=b'\n', max_size=512)
+            line = decode_reply(line)
+            logger.debug("IN: %s",line)
 
-                if isinstance(line, MultilineInfo):
-                    while True:
-                        li = await self.chan.receive_until(delimiter=b'\n', max_size=512)
-                        logger.debug("IN:: %s",li)
-                        if li == b'.':
-                            break
-                        line.lines.append(li)
-                await self._process_reply(line)
+            if isinstance(line, MultilineInfo):
+                while True:
+                    li = await self.chan.receive_until(delimiter=b'\n', max_size=512)
+                    logger.debug("IN:: %s",li)
+                    if li == b'.':
+                        break
+                    line.lines.append(li)
+            await self._process_reply(line)
 
     async def simple_cmd(self, *args):
         """Send a simple command to this server.
@@ -446,7 +494,9 @@ class Server:
             if res:
                 del self._cmds[i]
             return
-        raise WagoUnknown(reply)
+        if not isinstance(reply, MonitorCleared):
+            # collision between settingup and tearing down a monitor.
+            raise WagoUnknown(reply)
     
     # Actual accessors follow
 
