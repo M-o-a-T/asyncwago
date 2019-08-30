@@ -227,7 +227,7 @@ class MonitorChat(SimpleChat):
             if self.mon is False:
                 # already cancelled.
                 self.mon = reply.mon
-                await self.server.tg.spawn(self.aclose)
+                await self.server.task_group.spawn(self.aclose)
                 return False
             if self.mon is not None:
                 return None
