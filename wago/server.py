@@ -3,6 +3,7 @@ Basic Wago access
 """
 
 import anyio
+from anyio.exceptions import ClosedResourceError
 try:
     from contextlib import asynccontextmanager
 except ImportError:
@@ -105,7 +106,8 @@ class BaseChat:
     result = None
     server = None
 
-    def __init__(self):
+    def __init__(self, server):
+        self.server = server
         self.event = anyio.create_event()
 
     async def set(self, reply):
@@ -131,10 +133,9 @@ class BaseChat:
     async def _send(self, server):
         raise NotImplementedError("send")
 
-    async def interact(self, server):
+    async def start(self):
         """Run the command on this server"""
-        self.server = server
-        await server._interact(self)
+        await self.server._start_interact(self)
 
     async def aclose(self):
         """Call this when the server goes away"""
@@ -155,8 +156,8 @@ class HelloChat(BaseChat):
 class SimpleChat(BaseChat):
     """Send a command that expects a single reply"""
 
-    def __init__(self, cmd):
-        super().__init__()
+    def __init__(self, server, cmd):
+        super().__init__(server)
         self.cmd = cmd
 
     def __repr__(self):
@@ -188,8 +189,6 @@ class SimpleChat(BaseChat):
 class MonitorChat(SimpleChat):
     """Open a monitor.
     
-    Override `decode_signal` to check and convert the value.
-
     Override `process_signal` to do something with the resulting
     `MonitorSignal` event.
     """
@@ -206,19 +205,15 @@ class MonitorChat(SimpleChat):
         res = res[:-1]+" mon="+repr(self.mon)+res[-1]
         return res
 
-    async def interact(self, server):
-        await super().interact(server)
+    async def start(self):
+        await super().start()
         await self._did_setup.wait()
         if isinstance(self.result, SimpleRejectReply):
             raise WagoRejected(self.result.line)
 
-    def decode_signal(self, line):
-        """Override this to convert the input to something appropriate"""
-        return line
-
     async def set(self, reply):
         """Process replies"""
-        if not self.mon and isinstance(reply, SimpleRejectReply):
+        if self.mon is None and isinstance(reply, SimpleRejectReply):
             await self._did_setup.set()
             return await super().set(reply)
         if not isinstance(reply, MonitorReply):
@@ -237,6 +232,7 @@ class MonitorChat(SimpleChat):
         if self.mon is None or reply.mon != self.mon:
             return None
         if isinstance(reply, MonitorCleared):
+            self.mon = 0
             await self.event.set()
             await self._did_setup.set()  # just for safety
             # does not call super() because we want to keep the last reply
@@ -255,33 +251,76 @@ class MonitorChat(SimpleChat):
     async def aclose(self):
         """Closes the iteration, i.e. shuts down the monitor."""
         server = self.server
+        self.reply = False
         if self.mon is None:
             self.mon = False
         elif self.mon:
             m,self.mon = self.mon,0
-            await server.simple_cmd("m-"+str(m))
+            try:
+                await server.simple_cmd("m-"+str(m))
+            except ClosedResourceError:
+                pass
         await self.event.set()
         await self._did_setup.set()
 
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, *tb):
+        async with anyio.fail_after(2, shield=True) :
+            await self.aclose()
+
+
 class TimedOutputChat(MonitorChat):
-    """A monitor that expects a single trigger message.
+    """
+    A monitor that expects a single trigger message.
     This is used for outputs that are auto-cleared after some time.
 
     `wait` will return True if the message has been seen.
     """
     result = False
+
+    def __init__(self, server, card, port, value, duration1, duration2=None):
+        if duration2 is None:
+            cmd = "%s %s %s %s" % ("s" if value else "c", card, port, duration1,)
+        else:
+            cmd = "%s %s %s %s %s" % ("s" if value else "c", card, port, duration1, duration2)
+    
+        super().__init__(server, cmd)
+        self.card = card
+        self.port = port
+        self.value = value
+
     async def process_signal(self, reply):
         self.result = True
 
+    async def aclose(self):
+        """Clear the wire"""
+        async with anyio.fail_after(2, shield=True):
+            await super().aclose()
+            try:
+                await self.server.simple_cmd("c" if self.value else "s", self.card, self.port)
+            except ClosedResourceError:
+                pass
+
+
 class InputMonitorChat(MonitorChat):
-    """Watch an input, iterate the replies."""
+    """
+    Watch an input, iterate the replies.
+    
+    Override `decode_signal` to check and convert the value.
+    """
     q = None
     _qlen = 10
 
     def __aiter__(self):
+        return self
+
+    async def __aenter__(self):
         if self.q is None:
             self.q = anyio.create_queue(self._qlen+2)
-        return self
+        return await super().__aenter__()
 
     async def __anext__(self):
         if self.q is None:
@@ -330,13 +369,6 @@ class InputMonitorChat(MonitorChat):
                     await self.q.put(QueueBlocked)
         return False
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *tb):
-        async with anyio.open_cancel_scope(shield=True) :
-            await self.aclose()
-
 
 class InputCounterChat(InputMonitorChat):
     """Watch an input, count the changes."""
@@ -347,10 +379,10 @@ class InputCounterChat(InputMonitorChat):
 class PingChat(MonitorChat):
     _scope = None
 
-    def __init__(self, freq=1):
+    def __init__(self, server, freq=1):
         self._freq = freq
         self._wait = anyio.create_event()
-        super().__init__("Da "+str(freq))
+        super().__init__(server, "Da "+str(freq))
 
     def decode_signal(self, line):
         return int(line[line.rindex(' '):])
@@ -371,11 +403,11 @@ class PingChat(MonitorChat):
                     raise
                 self._wait = anyio.create_event()
 
-    async def interact(self, server):
+    async def start(self):
         evt = anyio.create_event()
-        await server.task_group.spawn(self.ping_wait, evt)
+        await self.server.task_group.spawn(self.ping_wait, evt)
         await evt.wait()
-        return await super().interact(server)
+        return await super().start()
 
     async def aclose(self):
         await super().aclose()
@@ -422,8 +454,8 @@ class Server:
             self.ping_freq = ping_freq
         if self._ping is not None:
             await self._ping.aclose()
-        self._ping = PingChat(self.ping_freq)
-        await self._ping.interact(self)
+        self._ping = PingChat(self, self.ping_freq)
+        await self._ping.start()
 
     async def _connect(self):
         return await anyio.connect_tcp(address=self.host, port=self.port)
@@ -444,7 +476,7 @@ class Server:
 
     async def _init_chan(self, evt):
         """Set up the device's state."""
-        await HelloChat().interact(self)
+        await HelloChat(self).start()
         await evt.set()
         await self._set_state()
 
@@ -454,7 +486,7 @@ class Server:
 
     async def _send(self, s):
         if self.chan is None:
-            return
+            raise ClosedResourceError
         logger.debug("OUT: %s",s)
         if isinstance(s, str):
             s = s.encode("utf-8")
@@ -484,11 +516,11 @@ class Server:
         If the reply is negative, this call raises 'WagoRejected`.
         """
         s = " ".join(str(arg) for arg in args)
-        res = SimpleChat(s)
-        await res.interact(self)
+        res = SimpleChat(self, s)
+        await res.start()
         return await res.wait()
 
-    async def _interact(self, cmd):
+    async def _start_interact(self, cmd):
         async with self._send_lock:
             self._cmds.append(cmd)
             await cmd._send(self)
@@ -521,7 +553,7 @@ class Server:
     async def write_output(self, card, port, value):
         """Change the state of a bool output."""
         res = await self.simple_cmd("s" if value else "c", card, port)
-        return bool(int(res.line))
+        return value
 
     async def describe(self):
         """Retrieve the interfaces attached to this server.
@@ -552,19 +584,17 @@ class Server:
             res.setdefault(io.decode('ascii'),{})[int(i)] = int(n)
         return res
 
-    async def monitor_input(self, card, port, direction=None):
+    def monitor_input(self, card, port, direction=None):
         """
         Monitor this input line.
 
         Direction is True/False/None for up/down/both.
         """
-        mon = InputMonitorChat("m+ %d %d %c" % \
+        return InputMonitorChat(self, "m+ %d %d %c" % \
                 (card, port, "*" if direction is None
                                  else '+' if direction else '-'))
-        await mon.interact(self)
-        return mon
 
-    async def count_input(self, card, port, direction=None, interval=None):
+    def count_input(self, card, port, direction=None, interval=None):
         """
         Count pulses on this input line. Reports count per interval.
 
@@ -572,27 +602,26 @@ class Server:
         """
         if interval is None:
             interval = max(10, self.freq)
-        mon = InputCounterChat("m# %d %d %c %f" % \
+        return InputCounterChat(self, "m# %d %d %c %f" % \
                 (card, port, "*" if direction is None
                                  else '+' if direction else '-', interval))
-        await mon.interact(self)
-        return mon
 
-    async def write_timed_output(self, card, port, value, duration):
+    def write_timed_output(self, card, port, value, duration):
         """
         Set (or clear) an output for N seconds.
-        """
-        timed = TimedOutputChat("%s %s %s %s" % ("s" if value else "c", card, port, duration))
-        await timed.interact(self)
-        return timed
 
-    async def write_pulsed_output(self, card, port, value, duration1, duration2):
+        This is an async context manager. Call ``await mgr.wait()`` to
+        delay until the wire is reset. Cancelling will reset the wire.
+        """
+        return TimedOutputChat(self, card, port, value, duration)
+
+    def write_pulsed_output(self, card, port, value, duration1, duration2):
         """
         Set (or clear) an output for N1 seconds, then clear(or set) for N2 seconds, repeat.
+
+        This is an async context manager. Cancelling will reset the wire.
         """
-        timed = TimedOutputChat("%s %s %s %s %s" % ("s" if value else "c", card, port, duration1, duration2))
-        await timed.interact(self)
-        return timed
+        return TimedOutputChat(self, card, port, value, duration1, duration2)
 
 
 @asynccontextmanager
