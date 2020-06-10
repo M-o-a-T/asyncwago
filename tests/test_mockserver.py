@@ -194,22 +194,26 @@ async def test_wago_mock():
 
         # Yes I know that this is unlikely
         for i in range(10):
-            m = await s.write_timed_output(2,4,True,2)
+            m = s.write_timed_output(2,4,True,2)
+            await m.start()
             if await m.wait():
                 break
         else:
             assert False("We didn't get a sane output.")
-        m = await s.write_timed_output(2,4,True,10)
+        m = s.write_timed_output(2,4,True,10)
+        await m.start()
         assert not await m.wait()
 
-        m = await s.count_input(1,3,interval=2)
+        m = s.count_input(1,3,interval=2)
+        await m.start()
         async for msg in m:
             print(msg)
             if msg > 20:
                 break
         await m.aclose()
 
-        m = await s.monitor_input(1,3)
+        m = s.monitor_input(1,3)
+        await m.start()
         x = 0
         async for msg in m:
             print(msg)
