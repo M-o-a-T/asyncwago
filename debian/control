@@ -9,6 +9,8 @@ Homepage: http://github.com/M-o-a-T/asyncwago
 Package: python3-asyncwago
 Architecture: all
 Depends: ${misc:Depends}, ${python3:Depends}
+Replaces: python3-wago
+Conflicts: python3-wago
 Description: Access I/O on Wago controllers
  This library controls access to I/O on Wago controllers.
  These are industrial devices with various analog and digital extension modules.

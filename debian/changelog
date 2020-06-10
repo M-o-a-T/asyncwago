@@ -1,3 +1,10 @@
+asyncwago (0.21.1-3) unstable; urgency=medium
+
+  * Conflict with older python3-wago package
+    not really but kill it anyway
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Wed, 10 Jun 2020 10:06:16 +0200
+
 asyncwago (0.21.1-2) unstable; urgency=medium
 
   * Uptick debhelper version
