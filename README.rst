@@ -1,7 +1,7 @@
 Wago
 ====
 
-Welcome to `Wago <http://github.com/M-o-a-T/wago>`__!
+Welcome to `AsyncWago <http://github.com/M-o-a-T/asyncwago>`__!
 
 This library controls access to I/O on Wago controllers.
 These are industrial devices with various analog and digital extension modules.

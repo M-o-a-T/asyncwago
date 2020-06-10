@@ -1,5 +1,5 @@
 [tool.towncrier]
-package = "wago"
+package = "asyncwago"
 filename = "docs/source/history.rst"
 directory = "newsfragments"
 underlines = ["-", "~", "^"]

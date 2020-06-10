@@ -1,6 +1,6 @@
 Release history
 ===============
 
-.. currentmodule:: wago
+.. currentmodule:: asyncwago
 
 .. towncrier release notes start

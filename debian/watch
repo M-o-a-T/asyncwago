@@ -1,4 +1,4 @@
-# please also check http://pypi.debian.net/wago/watch
+# please also check http://pypi.debian.net/asyncwago/watch
 version=3
 opts=uversionmangle=s/(rc|a|b|c)/~$1/ \
-http://pypi.debian.net/wago/wago-(.+)\.(?:zip|tgz|tbz|txz|(?:tar\.(?:gz|bz2|xz)))
+http://pypi.debian.net/asyncwago/asyncwago-(.+)\.(?:zip|tgz|tbz|txz|(?:tar\.(?:gz|bz2|xz)))

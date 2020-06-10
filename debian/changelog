@@ -1,3 +1,9 @@
+asyncwago (0.21.1-1) unstable; urgency=medium
+
+  * Renamed
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Sat, 31 Aug 2019 20:45:04 +0200
+
 wago (0.20.0-1) unstable; urgency=medium
 
   * Merge 0.20.0

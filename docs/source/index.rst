@@ -4,9 +4,9 @@
    contain the root `toctree` directive.
 
 
-====================================
-Wago: Access I/O on Wago controllers
-====================================
+=========================================
+AsyncWago: Access I/O on Wago controllers
+=========================================
 
 .. toctree::
    :maxdepth: 2
