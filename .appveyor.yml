@@ -21,6 +21,6 @@ test_script:
   - "mkdir empty"
   - "cd empty"
   # Make sure it's being imported from where we expect
-  - "python -c \"import os, wago; print(os.path.dirname(wago.__file__))\""
+  - "python -c \"import os, asyncwago; print(os.path.dirname(asyncwago.__file__))\""
   - "python -u -m pytest -W error -ra -v -s --pyargs wago --cov=wago --cov-config=../.coveragerc"
   - "codecov"

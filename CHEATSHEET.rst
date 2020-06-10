@@ -48,23 +48,21 @@ To run tests
 * Install requirements: ``pip install -r ci/test-requirements.txt``
   (possibly in a virtualenv)
 
-* Actually run the tests: ``pytest wago``
+* Actually run the tests: ``pytest asyncwago``
 
 
 To run yapf
 -----------
 
 * Show what changes yapf wants to make: ``yapf -rpd setup.py
-  wago``
+  asyncwago``
 
 * Apply all changes directly to the source tree: ``yapf -rpi setup.py
-  wago``
+  asyncwago``
 
 
 To make a release
 -----------------
-
-* Update the version in ``wago/_version.py``
 
 * Run ``towncrier`` to collect your release notes.
 
@@ -73,6 +71,8 @@ To make a release
 * Check everything in.
 
 * Double-check it all works, docs build, etc.
+
+* Tag the release.
 
 * Build your sdist and wheel: ``python setup.py sdist bdist_wheel``
 

@@ -6,7 +6,7 @@ import sniffio
 from anyio.exceptions import IncompleteRead, DelimiterNotFound
 import asyncio
 import pytest
-from wago.server import Server,open_server, MonitorChat
+from asyncwago.server import Server,open_server, MonitorChat
 from functools import partial
 from inspect import iscoroutine
 
@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.DEBUG)
 # This also uses a virtual clock fixture, so time passes quickly and
 # predictably.
 
-from wago.server import Server
+from asyncwago.server import Server
 
 class _MockServerProtocol(anyio.abc.Stream):
     def __init__(self, server):
