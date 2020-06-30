@@ -4,105 +4,153 @@ Basic Wago access
 
 import anyio
 from anyio.exceptions import ClosedResourceError
+
 try:
     from contextlib import asynccontextmanager
 except ImportError:
     from async_generator import asynccontextmanager
 
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 class QueueBlocked:
     """Sentinel to show that the reader doesn't keep up"""
 
+
 class WagoException(RuntimeError):
     """Base class for our exceptions"""
+
     pass
+
 
 class WagoRejected(WagoException):
     """The controller rejected a command"""
+
     def __init__(self, line):
+        super().__init__()
         self.line = line
+
     def __repr__(self):
-        return "REJ:"+repr(self.line)
+        return "REJ:" + repr(self.line)
+
 
 class WagoUnknown(WagoException):
     """The controller sent an unknoan command"""
-    def __init__(self, line):
-        self.line = line
-    def __repr__(self):
-        return "UNK:"+repr(self.line)
 
-### replies
+    def __init__(self, line):
+        super().__init__()
+        self.line = line
+
+    def __repr__(self):
+        return "UNK:" + repr(self.line)
+
+
+# ### replies ### #
+
 
 class BaseReply:
     """Base class for replies from the controller"""
+
     line = None
+
     def __init__(self, line):
         self.line = line
+
     def __repr__(self):
         return "<%s:%s>" % (self.__class__.__name__, repr(self.line))
+
+
 class UnknownReply(BaseReply):
     """Anything without a recognized prefix"""
+
     pass
+
+
 class SimpleAckReply(BaseReply):
     """Reply starts with ``+``: Ack."""
+
     pass
+
+
 class SimpleRejectReply(BaseReply):
     """Reply starts with ``-``: Reject."""
+
     pass
+
+
 class SimpleInfo(BaseReply):
     """Reply starts with ``*``: Info."""
+
     pass
-class MultilineInfo(SimpleAckReply): # '='
+
+
+class MultilineInfo(SimpleAckReply):  # '='
     """Reply starts with ``=``: Multi-line."""
+
     def __init__(self, line):
         super().__init__(line)
         self.lines = []
+
     def __repr__(self):
-        return "<%s:%s (+%d)>" % \
-                (self.__class__.__name__, repr(self.line), len(self.lines))
+        return "<%s:%s (+%d)>" % (self.__class__.__name__, repr(self.line), len(self.lines))
+
 
 class MonitorReply(BaseReply):
     """Monitor reply base class."""
+
     mon = None
+
     def __init__(self, line):
-        mon, line = line.lstrip().split(b' ',1)
+        mon, line = line.lstrip().split(b" ", 1)
         self.mon = int(mon)
         super().__init__(line)
+
     def __repr__(self):
         return "<%s:%s %s>" % (self.__class__.__name__, self.mon, repr(self.line))
 
-class MonitorCreated(MonitorReply): # '!+'
+
+class MonitorCreated(MonitorReply):  # '!+'
     """Reply starts with ``!+``: monitor created."""
+
     pass
-class MonitorCleared(MonitorReply): # '!-'
+
+
+class MonitorCleared(MonitorReply):  # '!-'
     """Reply starts with ``!-``: monitor cleared."""
+
     pass
-class MonitorSignal(MonitorReply): # '!' without trailing + or -
+
+
+class MonitorSignal(MonitorReply):  # '!' without trailing + or -
     """Reply starts with ``!``: monitor signal."""
+
     pass
+
 
 def decode_reply(line):
     """Decode a reply line."""
-    if line[0] == b'+'[0]:
+    if line[0] == b"+"[0]:
         return SimpleAckReply(line[1:])
-    if line[0] == b'-'[0]:
+    if line[0] == b"-"[0]:
         return SimpleRejectReply(line[1:])
-    if line[0] == b'*'[0]:
+    if line[0] == b"*"[0]:
         return SimpleInfo(line[1:])
-    if line[0] == b'='[0]:
+    if line[0] == b"="[0]:
         return MultilineInfo(line[1:])
-    if line[0] != b'!'[0]:
+    if line[0] != b"!"[0]:
         return UnknownReply(line)
-    if line[1] == b'+'[0]:
+    if line[1] == b"+"[0]:
         return MonitorCreated(line[2:])
-    if line[1] == b'-'[0]:
+    if line[1] == b"-"[0]:
         return MonitorCleared(line[2:])
     return MonitorSignal(line[1:])
 
+
 class BaseChat:
     """Base class for sending a command to the server."""
+
     result = None
     server = None
 
@@ -128,7 +176,7 @@ class BaseChat:
     def __repr__(self):
         if self.result is None:
             return "<%s>" % (self.__class__.__name__,)
-        return "<%s =%s>" % (self.__class__.__name__,self.result)
+        return "<%s =%s>" % (self.__class__.__name__, self.result)
 
     async def _send(self, server):
         raise NotImplementedError("send")
@@ -145,6 +193,7 @@ class BaseChat:
 
 class HelloChat(BaseChat):
     """Read the initial message from the server"""
+
     async def set(self, reply):
         if not isinstance(reply, SimpleInfo):
             return None
@@ -152,6 +201,7 @@ class HelloChat(BaseChat):
 
     async def _send(self, server):
         pass
+
 
 class SimpleChat(BaseChat):
     """Send a command that expects a single reply"""
@@ -162,8 +212,8 @@ class SimpleChat(BaseChat):
 
     def __repr__(self):
         if self.result is None:
-            return "<%s:%s>" % (self.__class__.__name__,self.cmd)
-        return "<%s:%s =%s>" % (self.__class__.__name__,self.cmd,self.result)
+            return "<%s:%s>" % (self.__class__.__name__, self.cmd)
+        return "<%s:%s =%s>" % (self.__class__.__name__, self.cmd, self.result)
 
     async def _send(self, server):
         await server._send(self.cmd)
@@ -186,9 +236,10 @@ class SimpleChat(BaseChat):
             assert self.result is not None
         await super().aclose()
 
+
 class MonitorChat(SimpleChat):
     """Open a monitor.
-    
+
     Override `process_signal` to do something with the resulting
     `MonitorSignal` event.
     """
@@ -202,7 +253,7 @@ class MonitorChat(SimpleChat):
 
     def __repr__(self):
         res = super().__repr__()
-        res = res[:-1]+" mon="+repr(self.mon)+res[-1]
+        res = res[:-1] + " mon=" + repr(self.mon) + res[-1]
         return res
 
     async def start(self):
@@ -243,7 +294,7 @@ class MonitorChat(SimpleChat):
 
     async def process_signal(self, reply):
         """Process `MonitorSignal` events.
-        
+
         Override this; the default does nothing.
         """
         pass
@@ -251,13 +302,12 @@ class MonitorChat(SimpleChat):
     async def aclose(self):
         """Closes the iteration, i.e. shuts down the monitor."""
         server = self.server
-        self.reply = False
         if self.mon is None:
             self.mon = False
         elif self.mon:
-            m,self.mon = self.mon,0
+            m, self.mon = self.mon, 0
             try:
-                await server.simple_cmd("m-"+str(m))
+                await server.simple_cmd("m-" + str(m))
             except ClosedResourceError:
                 pass
         await self.event.set()
@@ -268,7 +318,7 @@ class MonitorChat(SimpleChat):
         return self
 
     async def __aexit__(self, *tb):
-        async with anyio.fail_after(2, shield=True) :
+        async with anyio.fail_after(2, shield=True):
             await self.aclose()
 
 
@@ -279,6 +329,7 @@ class TimedOutputChat(MonitorChat):
 
     `wait` will return True if the message has been seen.
     """
+
     result = False
 
     def __init__(self, server, card, port, value, duration1, duration2=None):
@@ -286,7 +337,7 @@ class TimedOutputChat(MonitorChat):
             cmd = "%s %s %s %s" % ("s" if value else "c", card, port, duration1,)
         else:
             cmd = "%s %s %s %s %s" % ("s" if value else "c", card, port, duration1, duration2)
-    
+
         super().__init__(server, cmd)
         self.card = card
         self.port = port
@@ -308,9 +359,10 @@ class TimedOutputChat(MonitorChat):
 class InputMonitorChat(MonitorChat):
     """
     Watch an input, iterate the replies.
-    
+
     Override `decode_signal` to check and convert the value.
     """
+
     q = None
     _qlen = 10
 
@@ -319,7 +371,7 @@ class InputMonitorChat(MonitorChat):
 
     async def __aenter__(self):
         if self.q is None:
-            self.q = anyio.create_queue(self._qlen+2)
+            self.q = anyio.create_queue(self._qlen + 2)
         return await super().__aenter__()
 
     async def __anext__(self):
@@ -331,29 +383,15 @@ class InputMonitorChat(MonitorChat):
             raise StopAsyncIteration
         return res
 
-    async def set(self, reply):
-        if self.mon in (None,False) or not isinstance(reply, MonitorSignal) \
-                or reply.mon != self.mon:
-            return await super().set(reply)
-
-        if self.q is not None:
-            sz = self.q.qsize()
-            if sz < self._qlen:
-                await self.q.put(self.decode_signal(reply.line))
-            elif sz == self._qlen:
-                await self.q.put(QueueBlocked)
-        return False
-
     def decode_signal(self, line):
-        if line in (b'H', b'1'):
+        if line in (b"H", b"1"):
             return True
-        if line in (b'L', b'0'):
+        if line in (b"L", b"0"):
             return False
         return ValueError(line)
 
     async def set(self, reply):
-        if not self.mon or not isinstance(reply, MonitorReply) \
-                or reply.mon != self.mon:
+        if not self.mon or not isinstance(reply, MonitorReply) or reply.mon != self.mon:
             return await super().set(reply)
         if isinstance(reply, MonitorCleared):
             if self.q is not None:
@@ -365,13 +403,14 @@ class InputMonitorChat(MonitorChat):
                 sz = self.q.qsize()
                 if sz <= self._qlen:
                     await self.q.put(self.decode_signal(reply.line))
-                elif sz == self._qlen+1:
+                elif sz == self._qlen + 1:
                     await self.q.put(QueueBlocked)
         return False
 
 
 class InputCounterChat(InputMonitorChat):
     """Watch an input, count the changes."""
+
     def decode_signal(self, line):
         return int(line)
 
@@ -382,10 +421,10 @@ class PingChat(MonitorChat):
     def __init__(self, server, freq=1):
         self._freq = freq
         self._wait = anyio.create_event()
-        super().__init__(server, "Da "+str(freq))
+        super().__init__(server, "Da " + str(freq))
 
     def decode_signal(self, line):
-        return int(line[line.rindex(' '):])
+        return int(line[line.rindex(" ") :])
 
     async def process_signal(self, reply):
         await self._wait.set()
@@ -414,11 +453,13 @@ class PingChat(MonitorChat):
         if self._scope is not None:
             await self._scope.cancel()
         await super().aclose()
-    
+
+
 class Server:
     """This class collects all data required to talk to a single Wago
     controller.
     """
+
     freq = 0.05  # how often to poll input lines. Min 0.01
     ping_freq = 3  # how often to expect a Ping keepalive
     _ping = None
@@ -444,7 +485,7 @@ class Server:
         """
         if freq is not None:
             self.freq = freq
-        await self.simple_cmd("d",self.freq)
+        await self.simple_cmd("d", self.freq)
 
     async def set_ping_freq(self, ping_freq: float = None):
         """
@@ -487,24 +528,24 @@ class Server:
     async def _send(self, s):
         if self.chan is None:
             raise ClosedResourceError
-        logger.debug("OUT: %s",s)
+        logger.debug("OUT: %s", s)
         if isinstance(s, str):
             s = s.encode("utf-8")
-        await self.chan.send_all(s+b'\n')
+        await self.chan.send_all(s + b"\n")
 
     async def _reader(self):
         while True:
             if self.chan is None:
                 return
-            line = await self.chan.receive_until(delimiter=b'\n', max_size=512)
+            line = await self.chan.receive_until(delimiter=b"\n", max_bytes=512)
             line = decode_reply(line)
-            logger.debug("IN: %s",line)
+            logger.debug("IN: %s", line)
 
             if isinstance(line, MultilineInfo):
                 while True:
-                    li = await self.chan.receive_until(delimiter=b'\n', max_size=512)
-                    logger.debug("IN:: %s",li)
-                    if li == b'.':
+                    li = await self.chan.receive_until(delimiter=b"\n", max_bytes=512)
+                    logger.debug("IN:: %s", li)
+                    if li == b".":
                         break
                     line.lines.append(li)
             await self._process_reply(line)
@@ -526,33 +567,33 @@ class Server:
             await cmd._send(self)
 
     async def _process_reply(self, reply):
-        for i,r in enumerate(self._cmds):
+        for i, r in enumerate(self._cmds):
             res = await r.set(reply)
             if res is None:
                 continue
-            logger.debug("Did %s %s %s",r,reply, res)
+            logger.debug("Did %s %s %s", r, reply, res)
             if res:
                 del self._cmds[i]
             return
         if not isinstance(reply, MonitorCleared):
             # collision between settingup and tearing down a monitor.
             raise WagoUnknown(reply)
-    
+
     # Actual accessors follow
 
     async def read_input(self, card, port):
         """Read the state of a bool input."""
-        res = await self.simple_cmd("i",card,port)
+        res = await self.simple_cmd("i", card, port)
         return bool(int(res.line))
 
     async def read_output(self, card, port):
         """Read the current state of a bool output."""
-        res = await self.simple_cmd("I",card,port)
+        res = await self.simple_cmd("I", card, port)
         return bool(int(res.line))
 
     async def write_output(self, card, port, value):
         """Change the state of a bool output."""
-        res = await self.simple_cmd("s" if value else "c", card, port)
+        await self.simple_cmd("s" if value else "c", card, port)
         return value
 
     async def describe(self):
@@ -571,17 +612,17 @@ class Server:
         """
         res = {}
         info = await self.simple_cmd("Dp")
-        for l in info.lines:
+        for line in info.lines:
             # 2: digital output:750-5xx 16 => 00010 00000 00000 0
             # 1: digital input:750-4xx 8 <= 00000 000
 
-            i,dig,io,n,_ = l.split(b" ",4)
-            if dig != b'digital':
+            i, dig, io, n, _ = line.split(b" ", 4)
+            if dig != b"digital":
                 continue
-            io = io[:io.index(b':')]
-            if i[-1] == b':'[0]:
+            io = io[: io.index(b":")]
+            if i[-1] == b":"[0]:
                 i = i[:-1]
-            res.setdefault(io.decode('ascii'),{})[int(i)] = int(n)
+            res.setdefault(io.decode("ascii"), {})[int(i)] = int(n)
         return res
 
     def monitor_input(self, card, port, direction=None):
@@ -590,9 +631,10 @@ class Server:
 
         Direction is True/False/None for up/down/both.
         """
-        return InputMonitorChat(self, "m+ %d %d %c" % \
-                (card, port, "*" if direction is None
-                                 else '+' if direction else '-'))
+        return InputMonitorChat(
+            self,
+            "m+ %d %d %c" % (card, port, "*" if direction is None else "+" if direction else "-"),
+        )
 
     def count_input(self, card, port, direction=None, interval=None):
         """
@@ -602,9 +644,11 @@ class Server:
         """
         if interval is None:
             interval = max(10, self.freq)
-        return InputCounterChat(self, "m# %d %d %c %f" % \
-                (card, port, "*" if direction is None
-                                 else '+' if direction else '-', interval))
+        return InputCounterChat(
+            self,
+            "m# %d %d %c %f"
+            % (card, port, "*" if direction is None else "+" if direction else "-", interval),
+        )
 
     def write_timed_output(self, card, port, value, duration):
         """
@@ -634,4 +678,3 @@ async def open_server(*args, ServerClass=Server, **kwargs):
         finally:
             await tg.cancel_scope.cancel()
             await s.aclose()
-

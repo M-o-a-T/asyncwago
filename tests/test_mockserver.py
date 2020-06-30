@@ -1,31 +1,29 @@
 import sys
-import time
 import anyio
 import anyio.abc
 import sniffio
 from anyio.exceptions import IncompleteRead, DelimiterNotFound
 import asyncio
 import pytest
-from asyncwago.server import Server,open_server, MonitorChat
+from asyncwago.server import Server, open_server
 from functools import partial
 from inspect import iscoroutine
-
-from typing import Callable, TypeVar, Optional, Tuple, Union, AsyncIterable, Dict, List, Coroutine
+from typing import AsyncIterable
 
 import logging
+
 logging.basicConfig(level=logging.DEBUG)
 
 # We can just use 'async def test_*' to define async tests.
 # This also uses a virtual clock fixture, so time passes quickly and
 # predictably.
 
-from asyncwago.server import Server
 
-class _MockServerProtocol(anyio.abc.Stream):
+class _MockServerProtocol(anyio.abc.Stream):  # pylint: disable=abstract-method
     def __init__(self, server):
         self.server = server
         self._recv_q = anyio.create_queue(1)
-        self._buffer = b''
+        self._buffer = b""
 
     async def _recv(self):
         if self._recv_q is None:
@@ -42,11 +40,12 @@ class _MockServerProtocol(anyio.abc.Stream):
 
     async def receive_some(self, max_bytes: int) -> bytes:
         if not self._buffer:
-            self._buffer = await self._recv(max_bytes)
+            self._buffer = await self._recv()  # max_bytes)
             if not self._buffer:
                 return None
         data, self._buffer = self._buffer[:max_bytes], self._buffer[max_bytes:]
         return data
+
     recv = receive_some
 
     async def receive_exactly(self, nbytes: int) -> bytes:
@@ -63,7 +62,7 @@ class _MockServerProtocol(anyio.abc.Stream):
         self._buffer = self._buffer[nbytes:]
         return result
 
-    async def receive_until(self, delimiter: bytes, max_size: int) -> bytes:
+    async def receive_until(self, delimiter: bytes, max_bytes: int) -> bytes:
         delimiter_size = len(delimiter)
         offset = 0
         while True:
@@ -71,15 +70,15 @@ class _MockServerProtocol(anyio.abc.Stream):
             index = self._buffer.find(delimiter, offset)
             if index >= 0:
                 found = self._buffer[:index]
-                self._buffer = self._buffer[index + len(delimiter):]
+                self._buffer = self._buffer[index + len(delimiter) :]
                 return found
 
             # Check if the buffer is already at or over the limit
-            if len(self._buffer) >= max_size:
-                raise DelimiterNotFound(max_size)
+            if len(self._buffer) >= max_bytes:
+                raise DelimiterNotFound(max_bytes)
 
             # Read more data into the buffer from the socket
-            read_size = max_size - len(self._buffer)
+            # read_size = max_bytes - len(self._buffer)
             data = await self._recv()
             if not data:
                 raise IncompleteRead
@@ -90,8 +89,10 @@ class _MockServerProtocol(anyio.abc.Stream):
 
     def receive_chunks(self, max_size: int) -> AsyncIterable[bytes]:
         raise NotImplementedError
-    def receive_delimited_chunks(self, delimiter: bytes,
-                                 max_chunk_size: int) -> AsyncIterable[bytes]:
+
+    def receive_delimited_chunks(
+        self, delimiter: bytes, max_chunk_size: int
+    ) -> AsyncIterable[bytes]:
         raise NotImplementedError
 
     async def close(self):
@@ -100,9 +101,13 @@ class _MockServerProtocol(anyio.abc.Stream):
         if iscoroutine(res):
             await res
 
-class AsyncioMockServerProtocol(asyncio.SubprocessProtocol, _MockServerProtocol):
+
+class AsyncioMockServerProtocol(
+    asyncio.SubprocessProtocol, _MockServerProtocol
+):  # pylint: disable=abstract-method
     def pipe_data_received(self, fd, data):
         self._recv_q.put_nowait(data)
+
     def pipe_connection_lost(self, fd, exc):
         self._recv_q.put_nowait(None)
 
@@ -123,7 +128,8 @@ class AsyncioMockServerProtocol(asyncio.SubprocessProtocol, _MockServerProtocol)
             return ""
         return res
 
-class TrioMockServerProtocol(_MockServerProtocol):
+
+class TrioMockServerProtocol(_MockServerProtocol):  # pylint: disable=abstract-method
     async def _recv_loop(self):
         """Receive loop"""
         while True:
@@ -141,70 +147,78 @@ class TrioMockServerProtocol(_MockServerProtocol):
         await self.server._sub_prot.stdin.send_all(data)
 
 
-
 class MockServer(Server):
     freq = 0.1
+    _sub_prot = None
+    _sub_trans = None
+
     def __init__(self, taskgroup):
-        super().__init__(taskgroup, 'nope.invalid')
+        super().__init__(taskgroup, "nope.invalid")
 
     async def _connect(self):
-        if sniffio.current_async_library() == 'asyncio':
+        if sniffio.current_async_library() == "asyncio":
             loop = asyncio.get_event_loop()
             self._sub_trans, self._sub_prot, = await loop.subprocess_exec(
-                    partial(AsyncioMockServerProtocol, server=self),
-                    "../wago-firmware/wago","-d","-D","-p0",
-                    "-c","../wago-firmware/wago.sample.csv",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=sys.stderr,
-                )
+                partial(AsyncioMockServerProtocol, server=self),
+                "../wago-firmware/wago",
+                "-d",
+                "-D",
+                "-p0",
+                "-c",
+                "../wago-firmware/wago.sample.csv",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=sys.stderr,
+            )
             return self._sub_prot
-        elif sniffio.current_async_library() == 'trio':
+        elif sniffio.current_async_library() == "trio":
             import trio
             import subprocess
+
             self._sub_prot = await trio.open_process(
-                    ["../wago-firmware/wago","-d","-D","-p0",
-                    "-c","../wago-firmware/wago.sample.csv"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=sys.stderr,
-                    )
-            p = TrioMockServerProtocol(server=self)
+                [
+                    "../wago-firmware/wago",
+                    "-d",
+                    "-D",
+                    "-p0",
+                    "-c",
+                    "../wago-firmware/wago.sample.csv",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=sys.stderr,
+            )
+            p = TrioMockServerProtocol(server=self)  # pylint: disable=abstract-class-instantiated
             await self.task_group.spawn(p._recv_loop)
             return p
         else:
-            assert False,"Not supported"
+            raise RuntimeError("Not supported")
 
-    async def run(self):
-        try:
-            super().run()
-        finally:
-            self._sub_prot.kill()
 
 @pytest.mark.anyio
 async def test_wago_mock():
     async with open_server(ServerClass=MockServer) as s:
         await s.simple_cmd("Dc")
-        assert await s.read_input(1,2) is False
+        assert await s.read_input(1, 2) is False
         await s.simple_cmd("Ds")
-        assert await s.read_input(1,2) is True
+        assert await s.read_input(1, 2) is True
         await s.simple_cmd("Dp")
         info = await s.describe()
-        assert info == {'input':{1:8},'output':{2:16,3:16}}
+        assert info == {"input": {1: 8}, "output": {2: 16, 3: 16}}
 
         # Yes I know that this is unlikely
-        for i in range(10):
-            m = s.write_timed_output(2,4,True,2)
+        for _ in range(10):
+            m = s.write_timed_output(2, 4, True, 2)
             await m.start()
             if await m.wait():
                 break
         else:
-            assert False("We didn't get a sane output.")
-        m = s.write_timed_output(2,4,True,10)
+            assert False, "We didn't get a sane output."
+        m = s.write_timed_output(2, 4, True, 10)
         await m.start()
         assert not await m.wait()
 
-        m = s.count_input(1,3,interval=2)
+        m = s.count_input(1, 3, interval=2)
         await m.start()
         async for msg in m:
             print(msg)
@@ -212,7 +226,7 @@ async def test_wago_mock():
                 break
         await m.aclose()
 
-        m = s.monitor_input(1,3)
+        m = s.monitor_input(1, 3)
         await m.start()
         x = 0
         async for msg in m:
@@ -220,4 +234,3 @@ async def test_wago_mock():
             x += 1
             if x >= 10:
                 break
-
