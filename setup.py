@@ -13,13 +13,8 @@ setup(
     author_email="matthias@urlichs.de",
     license="GPLv3 or later",
     packages=find_packages(),
-    install_requires=[
-        "anyio >= 1.0",
-        'importlib-metadata ~= 1.0 ; python_version < "3.8"',
-    ],
-    keywords=[
-        "iot",
-    ],
+    install_requires=["anyio >= 1.0", 'importlib-metadata ~= 1.0 ; python_version < "3.8"'],
+    keywords=["iot"],
     python_requires=">=3.6",
     classifiers=[
         "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
