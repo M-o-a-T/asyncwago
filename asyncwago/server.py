@@ -506,7 +506,7 @@ class Server:
         await self._ping.start()
 
     async def _connect(self):
-        return await anyio.connect_tcp(address=self.host, port=self.port)
+        return await anyio.connect_tcp(remote_host=self.host, remote_port=self.port)
 
     async def start(self):
         """This task holds the communication with a controller."""
