@@ -3,7 +3,6 @@ Basic Wago access
 """
 
 import anyio
-from anyio.exceptions import ClosedResourceError
 
 try:
     from contextlib import asynccontextmanager
@@ -308,7 +307,7 @@ class MonitorChat(SimpleChat):
             m, self.mon = self.mon, 0
             try:
                 await server.simple_cmd("m-" + str(m))
-            except ClosedResourceError:
+            except anyio.ClosedResourceError:
                 pass
         await self.event.set()
         await self._did_setup.set()
@@ -352,7 +351,7 @@ class TimedOutputChat(MonitorChat):
             await super().aclose()
             try:
                 await self.server.simple_cmd("c" if self.value else "s", self.card, self.port)
-            except ClosedResourceError:
+            except anyio.ClosedResourceError:
                 pass
 
 
@@ -527,7 +526,7 @@ class Server:
 
     async def _send(self, s):
         if self.chan is None:
-            raise ClosedResourceError
+            raise anyio.ClosedResourceError
         logger.debug("OUT: %s", s)
         if isinstance(s, str):
             s = s.encode("utf-8")
@@ -576,7 +575,7 @@ class Server:
                 del self._cmds[i]
             return
         if not isinstance(reply, MonitorCleared):
-            # collision between settingup and tearing down a monitor.
+            # collision between settingup and tearing down a monitor?
             raise WagoUnknown(reply)
 
     # Actual accessors follow
