@@ -3,6 +3,7 @@ Basic Wago access
 """
 
 import anyio
+from anyio.streams.buffered import BufferedByteReceiveStream
 
 try:
     from contextlib import asynccontextmanager
@@ -511,6 +512,7 @@ class Server:
     async def start(self):
         """This task holds the communication with a controller."""
         self.chan = await self._connect()
+        self.chan_r = BufferedByteReceiveStream(self.chan)
         tg = self.task_group
         await tg.start(self._init_chan)
         await tg.start(self._reader)
@@ -518,7 +520,7 @@ class Server:
     async def aclose(self):
         if self.chan is not None:
             await self.chan.aclose()
-            self.chan = None
+            self.chan = self.chan_r = None
 
     async def _init_chan(self, *, task_status):
         """Set up the device's state."""
@@ -543,13 +545,13 @@ class Server:
         while True:
             if self.chan is None:
                 return
-            line = await self.chan.receive_until(delimiter=b"\n", max_bytes=512)
+            line = await self.chan_r.receive_until(delimiter=b"\n", max_bytes=512)
             line = decode_reply(line)
             logger.debug("IN: %s", line)
 
             if isinstance(line, MultilineInfo):
                 while True:
-                    li = await self.chan.receive_until(delimiter=b"\n", max_bytes=512)
+                    li = await self.chan_r.receive_until(delimiter=b"\n", max_bytes=512)
                     logger.debug("IN:: %s", li)
                     if li == b".":
                         break
