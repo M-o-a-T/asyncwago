@@ -2,6 +2,7 @@ import sys
 import anyio
 import anyio.abc
 import sniffio
+import subprocess
 from anyio import IncompleteRead, DelimiterNotFound
 import asyncio
 import pytest
@@ -19,34 +20,28 @@ logging.basicConfig(level=logging.DEBUG)
 # predictably.
 
 
-class _MockServerProtocol(anyio.abc.Stream):  # pylint: disable=abstract-method
+class MockServerProtocol(anyio.abc.ByteStream):  # pylint: disable=abstract-method
     def __init__(self, server):
         self.server = server
-        self._recv_q = anyio.create_queue(1)
         self._buffer = b""
 
     async def _recv(self):
-        if self._recv_q is None:
+        b = await self.server._sub_prot.stdout.receive(1024)
+        if not b:
             return ""
-        res = await self._recv_q.get()
-        if res is None:
-            self._recv_q = None
-            return ""
-        return res
+        return b
 
     @property
     def buffered_data(self):
         return self._buffer
 
-    async def receive_some(self, max_bytes: int) -> bytes:
+    async def receive(self, max_bytes: int) -> bytes:
         if not self._buffer:
             self._buffer = await self._recv()  # max_bytes)
             if not self._buffer:
                 return None
         data, self._buffer = self._buffer[:max_bytes], self._buffer[max_bytes:]
         return data
-
-    recv = receive_some
 
     async def receive_exactly(self, nbytes: int) -> bytes:
         bytes_left = nbytes - len(self._buffer)
@@ -95,56 +90,16 @@ class _MockServerProtocol(anyio.abc.Stream):  # pylint: disable=abstract-method
     ) -> AsyncIterable[bytes]:
         raise NotImplementedError
 
-    async def close(self):
-        """This may or may not work."""
-        res = super().close()
-        if iscoroutine(res):
-            await res
 
-
-class AsyncioMockServerProtocol(
-    asyncio.SubprocessProtocol, _MockServerProtocol
-):  # pylint: disable=abstract-method
-    def pipe_data_received(self, fd, data):
-        self._recv_q.put_nowait(data)
-
-    def pipe_connection_lost(self, fd, exc):
-        self._recv_q.put_nowait(None)
-
-    async def close(self):
-        if self.server._sub_trans is not None:
-            self.server._sub_trans.close()
-            self.server._sub_trans = None
-
-    async def send_all(self, data):
-        self.server._sub_trans.get_pipe_transport(0).write(data)
-
-    async def _recv(self):
-        if self._recv_q is None:
-            return ""
-        res = await self._recv_q.get()
-        if res is None:
-            self._recv_q = None
-            return ""
-        return res
-
-
-class TrioMockServerProtocol(_MockServerProtocol):  # pylint: disable=abstract-method
-    async def _recv_loop(self):
-        """Receive loop"""
-        while True:
-            b = await self.server._sub_prot.stdout.receive_some(1024)
-            if not b:
-                await self._recv_q.put(None)
-                break
-            await self._recv_q.put(b)
-
-    async def close(self):
+    async def aclose(self):
         if self.server._sub_prot is not None:
             self.server._sub_prot.kill()
 
-    async def send_all(self, data):
-        await self.server._sub_prot.stdin.send_all(data)
+    async def send(self, data):
+        await self.server._sub_prot.stdin.send(data)
+
+    async def send_eof(self):
+        await self.server._sub_prot.stdin.aclose()
 
 
 class MockServer(Server):
@@ -156,26 +111,7 @@ class MockServer(Server):
         super().__init__(taskgroup, "nope.invalid")
 
     async def _connect(self):
-        if sniffio.current_async_library() == "asyncio":
-            loop = asyncio.get_event_loop()
-            self._sub_trans, self._sub_prot, = await loop.subprocess_exec(
-                partial(AsyncioMockServerProtocol, server=self),
-                "../wago-firmware/wago",
-                "-d",
-                "-D",
-                "-p0",
-                "-c",
-                "../wago-firmware/wago.sample.csv",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=sys.stderr,
-            )
-            return self._sub_prot
-        elif sniffio.current_async_library() == "trio":
-            import trio
-            import subprocess
-
-            self._sub_prot = await trio.open_process(
+        self._sub_prot = await anyio.open_process(
                 [
                     "../wago-firmware/wago",
                     "-d",
@@ -188,14 +124,12 @@ class MockServer(Server):
                 stdout=subprocess.PIPE,
                 stderr=sys.stderr,
             )
-            p = TrioMockServerProtocol(server=self)  # pylint: disable=abstract-class-instantiated
-            await self.task_group.spawn(p._recv_loop)
-            return p
-        else:
-            raise RuntimeError("Not supported")
+        p = MockServerProtocol(server=self)  # pylint: disable=abstract-class-instantiated
+        return p
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['trio'])
 async def test_wago_mock():
     async with open_server(ServerClass=MockServer) as s:
         await s.simple_cmd("Dc")

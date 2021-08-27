@@ -155,7 +155,7 @@ class BaseChat:
 
     def __init__(self, server):
         self.server = server
-        self.event = anyio.create_event()
+        self.event = anyio.Event()
 
     async def set(self, reply):
         """
@@ -169,7 +169,7 @@ class BaseChat:
         Override this, and return ``__super__`` if you want to return `True`.
         """
         self.result = reply
-        await self.event.set()
+        self.event.set()
         return True
 
     def __repr__(self):
@@ -186,7 +186,7 @@ class BaseChat:
 
     async def aclose(self):
         """Call this when the server goes away"""
-        await self.event.set()
+        self.event.set()
         self.server = None
 
 
@@ -247,7 +247,7 @@ class MonitorChat(SimpleChat):
     mon = None
 
     def __init__(self, *args):
-        self._did_setup = anyio.create_event()
+        self._did_setup = anyio.Event()
         super().__init__(*args)
 
     def __repr__(self):
@@ -264,7 +264,7 @@ class MonitorChat(SimpleChat):
     async def set(self, reply):
         """Process replies"""
         if self.mon is None and isinstance(reply, SimpleRejectReply):
-            await self._did_setup.set()
+            self._did_setup.set()
             return await super().set(reply)
         if not isinstance(reply, MonitorReply):
             return None
@@ -272,19 +272,19 @@ class MonitorChat(SimpleChat):
             if self.mon is False:
                 # already cancelled.
                 self.mon = reply.mon
-                await self.server.task_group.spawn(self.aclose)
+                self.server.task_group.statr_soon(self.aclose)
                 return False
             if self.mon is not None:
                 return None
             self.mon = reply.mon
-            await self._did_setup.set()
+            self._did_setup.set()
             return False
         if self.mon is None or reply.mon != self.mon:
             return None
         if isinstance(reply, MonitorCleared):
             self.mon = 0
-            await self.event.set()
-            await self._did_setup.set()  # just for safety
+            self.event.set()
+            self._did_setup.set()  # just for safety
             # does not call super() because we want to keep the last reply
             return True
         assert isinstance(reply, MonitorSignal)
@@ -309,15 +309,15 @@ class MonitorChat(SimpleChat):
                 await server.simple_cmd("m-" + str(m))
             except anyio.ClosedResourceError:
                 pass
-        await self.event.set()
-        await self._did_setup.set()
+        self.event.set()
+        self._did_setup.set()
 
     async def __aenter__(self):
         await self.start()
         return self
 
     async def __aexit__(self, *tb):
-        async with anyio.fail_after(2, shield=True):
+        with anyio.fail_after(2, shield=True):
             await self.aclose()
 
 
@@ -333,7 +333,12 @@ class TimedOutputChat(MonitorChat):
 
     def __init__(self, server, card, port, value, duration1, duration2=None):
         if duration2 is None:
-            cmd = "%s %s %s %s" % ("s" if value else "c", card, port, duration1,)
+            cmd = "%s %s %s %s" % (
+                "s" if value else "c",
+                card,
+                port,
+                duration1,
+            )
         else:
             cmd = "%s %s %s %s %s" % ("s" if value else "c", card, port, duration1, duration2)
 
@@ -347,7 +352,7 @@ class TimedOutputChat(MonitorChat):
 
     async def aclose(self):
         """Clear the wire"""
-        async with anyio.fail_after(2, shield=True):
+        with anyio.fail_after(2, shield=True):
             await super().aclose()
             try:
                 await self.server.simple_cmd("c" if self.value else "s", self.card, self.port)
@@ -362,24 +367,27 @@ class InputMonitorChat(MonitorChat):
     Override `decode_signal` to check and convert the value.
     """
 
-    q = None
+    qr = None
+    qw = None
+    _qc = 0
     _qlen = 10
 
     def __aiter__(self):
         return self
 
     async def __aenter__(self):
-        if self.q is None:
-            self.q = anyio.create_queue(self._qlen + 2)
+        if self.qw is None:
+            self.qw,self.qr = anyio.create_memory_object_stream(self._qlen + 2)
         return await super().__aenter__()
 
     async def __anext__(self):
-        if self.q is None:
+        if self.qr is None:
             raise StopAsyncIteration
-        res = await self.q.get()
-        if res is None:
-            self.q = None
+        try:
+            res = await self.qr.get()
+        except anyio.ClosedResourceError:
             raise StopAsyncIteration
+        self._qc -= 1
         return res
 
     def decode_signal(self, line):
@@ -393,17 +401,19 @@ class InputMonitorChat(MonitorChat):
         if not self.mon or not isinstance(reply, MonitorReply) or reply.mon != self.mon:
             return await super().set(reply)
         if isinstance(reply, MonitorCleared):
-            if self.q is not None:
-                await self.q.put(None)
-                self.q = None
+            if self.qw is not None:
+                await self.qw.aclose()
+                self.qw = self.qr = None
             return await super().set(reply)
         if isinstance(reply, MonitorSignal):
-            if self.q is not None:
-                sz = self.q.qsize()
+            if self.qw is not None:
+                sz = self._qc
                 if sz <= self._qlen:
-                    await self.q.put(self.decode_signal(reply.line))
+                    await self.qw.put(self.decode_signal(reply.line))
+                    self._qc += 1
                 elif sz == self._qlen + 1:
-                    await self.q.put(QueueBlocked)
+                    await self.qw.put(QueueBlocked)
+                    self._qc += 1
         return False
 
 
@@ -419,32 +429,30 @@ class PingChat(MonitorChat):
 
     def __init__(self, server, freq=1):
         self._freq = freq
-        self._wait = anyio.create_event()
+        self._wait = anyio.Event()
         super().__init__(server, "Da " + str(freq))
 
     def decode_signal(self, line):
         return int(line[line.rindex(" ") :])
 
     async def process_signal(self, reply):
-        await self._wait.set()
+        self._wait.set()
 
-    async def ping_wait(self, evt):
-        async with anyio.open_cancel_scope() as sc:
+    async def ping_wait(self, *, task_status):
+        with anyio.CancelScope() as sc:
             self._scope = sc
-            await evt.set()
+            task_status.started()
             while True:
                 try:
-                    async with anyio.fail_after(self._freq * 3):
+                    with anyio.fail_after(self._freq * 3):
                         await self._wait.wait()
                 except TimeoutError:
                     logger.error("PING missing %r", self)
                     raise
-                self._wait = anyio.create_event()
+                self._wait = anyio.Event()
 
     async def start(self):
-        evt = anyio.create_event()
-        await self.server.task_group.spawn(self.ping_wait, evt)
-        await evt.wait()
+        await self.server.task_group.start(self.ping_wait)
         return await super().start()
 
     async def aclose(self):
@@ -476,7 +484,7 @@ class Server:
 
         self._ports = {}
         self._cmds = []
-        self._send_lock = anyio.create_lock()
+        self._send_lock = anyio.Lock()
 
     async def set_freq(self, freq: float = None):
         """
@@ -504,20 +512,18 @@ class Server:
         """This task holds the communication with a controller."""
         self.chan = await self._connect()
         tg = self.task_group
-        evt = anyio.create_event()
-        await tg.spawn(self._init_chan, evt)
-        await evt.wait()
-        await tg.spawn(self._reader)
+        await tg.start(self._init_chan)
+        await tg.start(self._reader)
 
     async def aclose(self):
         if self.chan is not None:
-            await self.chan.close()
+            await self.chan.aclose()
             self.chan = None
 
-    async def _init_chan(self, evt):
+    async def _init_chan(self, *, task_status):
         """Set up the device's state."""
         await HelloChat(self).start()
-        await evt.set()
+        task_status.started()
         await self._set_state()
 
     async def _set_state(self):
@@ -530,9 +536,10 @@ class Server:
         logger.debug("OUT: %s", s)
         if isinstance(s, str):
             s = s.encode("utf-8")
-        await self.chan.send_all(s + b"\n")
+        await self.chan.send(s + b"\n")
 
-    async def _reader(self):
+    async def _reader(self, *, task_status):
+        task_status.started()
         while True:
             if self.chan is None:
                 return
@@ -675,5 +682,5 @@ async def open_server(*args, ServerClass=Server, **kwargs):
             await s.start()
             yield s
         finally:
-            await tg.cancel_scope.cancel()
+            tg.cancel_scope.cancel()
             await s.aclose()
