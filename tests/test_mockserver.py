@@ -35,7 +35,7 @@ class MockServerProtocol(anyio.abc.ByteStream):  # pylint: disable=abstract-meth
     def buffered_data(self):
         return self._buffer
 
-    async def receive(self, max_bytes: int) -> bytes:
+    async def receive(self, max_bytes: int=4096) -> bytes:
         if not self._buffer:
             self._buffer = await self._recv()  # max_bytes)
             if not self._buffer:
@@ -57,7 +57,7 @@ class MockServerProtocol(anyio.abc.ByteStream):  # pylint: disable=abstract-meth
         self._buffer = self._buffer[nbytes:]
         return result
 
-    async def receive_until(self, delimiter: bytes, max_bytes: int) -> bytes:
+    async def receive_until(self, delimiter: bytes, max_bytes: int=4096) -> bytes:
         delimiter_size = len(delimiter)
         offset = 0
         while True:
