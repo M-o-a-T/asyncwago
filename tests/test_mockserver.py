@@ -2,7 +2,7 @@ import sys
 import anyio
 import anyio.abc
 import sniffio
-from anyio.exceptions import IncompleteRead, DelimiterNotFound
+from anyio import IncompleteRead, DelimiterNotFound
 import asyncio
 import pytest
 from asyncwago.server import Server, open_server
