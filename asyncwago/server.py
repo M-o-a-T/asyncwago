@@ -385,7 +385,7 @@ class InputMonitorChat(MonitorChat):
         if self.qr is None:
             raise StopAsyncIteration
         try:
-            res = await self.qr.get()
+            res = await self.qr.receive()
         except anyio.ClosedResourceError:
             raise StopAsyncIteration
         self._qc -= 1
@@ -410,10 +410,10 @@ class InputMonitorChat(MonitorChat):
             if self.qw is not None:
                 sz = self._qc
                 if sz <= self._qlen:
-                    await self.qw.put(self.decode_signal(reply.line))
+                    await self.qw.send(self.decode_signal(reply.line))
                     self._qc += 1
                 elif sz == self._qlen + 1:
-                    await self.qw.put(QueueBlocked)
+                    await self.qw.send(QueueBlocked)
                     self._qc += 1
         return False
 
