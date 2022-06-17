@@ -33,6 +33,9 @@ class WagoRejected(WagoException):
         self.line = line
 
     def __repr__(self):
+        return "<%s: %s>" % (self.__class__.__name__, repr(self.line))
+
+    def __str__(self):
         return "REJ:" + repr(self.line)
 
 
@@ -44,7 +47,10 @@ class WagoUnknown(WagoException):
         self.line = line
 
     def __repr__(self):
-        return "UNK:" + repr(self.line)
+        return "<%s: %s>" % (self.__class__.__name__, repr(self.line))
+
+    def __str__(self):
+        return "UNKNOWN:" + repr(self.line)
 
 
 # ### replies ### #
@@ -584,7 +590,7 @@ class Server:
                 del self._cmds[i]
             return
         if not isinstance(reply, MonitorCleared):
-            # collision between settingup and tearing down a monitor?
+            # collision between setting up and tearing down a monitor?
             raise WagoUnknown(reply)
 
     # Actual accessors follow
