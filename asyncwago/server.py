@@ -591,7 +591,8 @@ class Server:
             return
         if not isinstance(reply, MonitorCleared):
             # collision between setting up and tearing down a monitor?
-            raise WagoUnknown(reply)
+            if not "already set" in str(reply):
+                raise WagoUnknown(reply)
 
     # Actual accessors follow
 
