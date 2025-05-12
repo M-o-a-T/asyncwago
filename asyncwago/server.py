@@ -465,7 +465,7 @@ class PingChat(MonitorChat):
     async def aclose(self):
         await super().aclose()
         if self._scope is not None:
-            await self._scope.cancel()
+            self._scope.cancel()
         await super().aclose()
 
 
