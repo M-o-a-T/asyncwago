@@ -724,8 +724,7 @@ class Server:
                 continue
             mon_id = int(parts[0])
             rest = parts[1].decode("ascii")
-            if not rest.startswith(("timed set: ", "timed clear: ")):
-                continue
+
             # rest looks like "timed set: 2:4 337.874"
             colon_idx = rest.index(": ")
             cp_part = rest[colon_idx + 2:]
