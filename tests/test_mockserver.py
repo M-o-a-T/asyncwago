@@ -148,23 +148,19 @@ async def test_wago_mock():
                 break
         else:
             assert False, "We didn't get a sane output."
-        m = s.write_timed_output(2, 4, True, 10)
-        await m.start()
-        assert not await m.wait()
+        async with s.write_timed_output(2, 4, True, 10) as m:
+            assert not await m.wait()
 
-        m = s.count_input(1, 3, interval=2)
-        await m.start()
-        async for msg in m:
-            print(msg)
-            if msg > 20:
-                break
-        await m.aclose()
+        async with s.count_input(1, 3, interval=2) as m:
+            async for msg in m:
+                print(msg)
+                if msg > 20:
+                    break
 
-        m = s.monitor_input(1, 3)
-        await m.start()
-        x = 0
-        async for msg in m:
-            print(msg)
-            x += 1
-            if x >= 10:
-                break
+        async with s.monitor_input(1, 3) as m:
+            x = 0
+            async for msg in m:
+                print(msg)
+                x += 1
+                if x >= 10:
+                    break
