@@ -367,6 +367,33 @@ class TimedOutputChat(MonitorChat):
                 pass
 
 
+class ResumedTimedOutputChat(TimedOutputChat):
+    """
+    Re-attach to an existing timed-output monitor.
+
+    `wait` will return True if the trigger message has been seen.
+    """
+
+    def __init__(self, server, mon_id, card, port, value):
+        MonitorChat.__init__(self, server, "m? " + str(mon_id))
+        self.mon = mon_id
+        self.card = card
+        self.port = port
+        self.value = value
+
+    async def set(self, reply):
+        if not self._did_setup.is_set():
+            if isinstance(reply, SimpleAckReply):
+                self._did_setup.set()
+                return False
+            if isinstance(reply, SimpleRejectReply):
+                self.result = reply
+                self._did_setup.set()
+                self.event.set()
+                return True
+        return await super().set(reply)
+
+
 class InputMonitorChat(MonitorChat):
     """
     Watch an input, iterate the replies.
@@ -681,6 +708,33 @@ class Server:
         This is an async context manager. Cancelling will reset the wire.
         """
         return TimedOutputChat(self, card, port, value, duration1, duration2)
+
+    async def find_monitor(self, card, port):
+        """
+        List existing monitors and return a resumed chat for a timed output
+        on the given *card*:*port*.
+
+        Returns a :class:`ResumedTimedOutputChat` if a matching monitor is
+        found, otherwise ``None``.
+        """
+        info = await self.simple_cmd("m")
+        for line in info.lines:
+            parts = line.split(b" ", 1)
+            if len(parts) < 2:
+                continue
+            mon_id = int(parts[0])
+            rest = parts[1].decode("ascii")
+            if not rest.startswith(("timed set: ", "timed clear: ")):
+                continue
+            # rest looks like "timed set: 2:4 337.874"
+            colon_idx = rest.index(": ")
+            cp_part = rest[colon_idx + 2:]
+            cp, _ = cp_part.split(" ", 1)
+            mc, mp = map(int, cp.split(":"))
+            if mc == card and mp == port:
+                value = rest.startswith("timed set: ")
+                return ResumedTimedOutputChat(self, mon_id, card, port, value)
+        return None
 
 
 @asynccontextmanager
